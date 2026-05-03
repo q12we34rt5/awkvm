@@ -1,4 +1,4 @@
-int add(int a, int b) {
+__attribute__((noinline)) int add(int a, int b) {
     return a + b;
 }
 
