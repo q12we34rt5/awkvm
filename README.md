@@ -10,12 +10,13 @@ an escape hatch — so a hand-built bash runtime is unnecessary and a
 single self-contained `.awk` file is enough to host most "ordinary"
 C programs.
 
-> Work in progress. Today the CLI parses IR and prints a module summary;
-> codegen lands in upcoming phases.
+> Work in progress. Integer arithmetic, control flow, bitwise ops,
+> width conversions, and direct calls work today; memory, floats, and
+> a stdlib bridge are upcoming phases.
 
 ## Build
 
-LLVM 19 is required. On macOS (Apple Silicon):
+LLVM 19 is required at build time. On macOS (Apple Silicon):
 
 ```sh
 brew install llvm@19
@@ -30,9 +31,14 @@ For Intel Macs or Linux, edit that file to match your install prefix.
 ```sh
 awkvm program.bc -o program.awk
 awkvm program.ll -o program.awk    # auto-converts via llvm-as
+gawk -f program.awk; echo $?
 ```
 
 Without `-o`, the awk script is written to stdout.
+
+The generated script requires **gawk** (`brew install gawk` on macOS).
+It uses gawk's `and`/`or`/`xor`/`lshift`/`rshift` built-ins for bitwise
+operations; POSIX awk and BSD/one-true awk don't provide these.
 
 ## Generating fixtures
 
