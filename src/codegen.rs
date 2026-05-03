@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use either::Either;
-use llvm_ir::{Constant, ConstantRef, Function, Instruction, Module, Name, Operand, Terminator};
+use llvm_ir::{
+    Constant, ConstantRef, Function, Instruction, IntPredicate, Module, Name, Operand, Terminator,
+};
 
 pub fn emit(module: &Module) -> Result<String> {
     let mut out = String::new();
@@ -22,25 +24,22 @@ pub fn emit(module: &Module) -> Result<String> {
 }
 
 fn emit_function(out: &mut String, func: &Function) -> Result<()> {
-    if func.basic_blocks.len() != 1 {
-        bail!(
-            "function `{}` has {} basic blocks; multi-block control flow is not implemented yet",
-            func.name,
-            func.basic_blocks.len()
-        );
-    }
-    let bb = &func.basic_blocks[0];
-
     let params: Vec<String> = func.parameters.iter().map(|p| name_to_var(&p.name)).collect();
+    let multi_block = func.basic_blocks.len() > 1;
 
     let mut locals: BTreeSet<String> = BTreeSet::new();
-    for instr in &bb.instrs {
-        if let Some(name) = instruction_dest(instr) {
-            let var = name_to_var(name);
-            if !params.contains(&var) {
-                locals.insert(var);
+    for bb in &func.basic_blocks {
+        for instr in &bb.instrs {
+            if let Some(name) = instruction_dest(instr) {
+                let var = name_to_var(name);
+                if !params.contains(&var) {
+                    locals.insert(var);
+                }
             }
         }
+    }
+    if multi_block {
+        locals.insert("block".to_string());
     }
 
     let _ = write!(out, "function {}(", func_to_var(&func.name));
@@ -52,13 +51,35 @@ fn emit_function(out: &mut String, func: &Function) -> Result<()> {
     }
     let _ = writeln!(out, ") {{");
 
-    for instr in &bb.instrs {
-        emit_instruction(out, instr)?;
+    if multi_block {
+        emit_multi_block(out, func)?;
+    } else {
+        let bb = &func.basic_blocks[0];
+        for instr in &bb.instrs {
+            emit_instruction(out, instr, "    ")?;
+        }
+        emit_terminator(out, &bb.term, &bb.name, func, "    ")?;
     }
-    emit_terminator(out, &bb.term)?;
 
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
+    Ok(())
+}
+
+fn emit_multi_block(out: &mut String, func: &Function) -> Result<()> {
+    let entry = &func.basic_blocks[0];
+    let _ = writeln!(out, "    block = \"{}\"", block_label(&entry.name));
+    let _ = writeln!(out, "    while (1) {{");
+    for (i, bb) in func.basic_blocks.iter().enumerate() {
+        let kw = if i == 0 { "if" } else { "else if" };
+        let _ = writeln!(out, "        {kw} (block == \"{}\") {{", block_label(&bb.name));
+        for instr in &bb.instrs {
+            emit_instruction(out, instr, "            ")?;
+        }
+        emit_terminator(out, &bb.term, &bb.name, func, "            ")?;
+        let _ = writeln!(out, "        }}");
+    }
+    let _ = writeln!(out, "    }}");
     Ok(())
 }
 
@@ -70,23 +91,23 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         Mul(i) => Some(&i.dest),
         SDiv(i) => Some(&i.dest),
         SRem(i) => Some(&i.dest),
+        ICmp(i) => Some(&i.dest),
+        Phi(i) => Some(&i.dest),
         Call(i) => i.dest.as_ref(),
         _ => None,
     }
 }
 
-fn emit_instruction(out: &mut String, instr: &Instruction) -> Result<()> {
+fn emit_instruction(out: &mut String, instr: &Instruction, indent: &str) -> Result<()> {
     use Instruction::*;
     match instr {
-        Add(i) => binop(out, &i.dest, &i.operand0, "+", &i.operand1),
-        Sub(i) => binop(out, &i.dest, &i.operand0, "-", &i.operand1),
-        Mul(i) => binop(out, &i.dest, &i.operand0, "*", &i.operand1),
+        Add(i) => binop(out, indent, &i.dest, &i.operand0, "+", &i.operand1),
+        Sub(i) => binop(out, indent, &i.dest, &i.operand0, "-", &i.operand1),
+        Mul(i) => binop(out, indent, &i.dest, &i.operand0, "*", &i.operand1),
         SDiv(i) => {
-            // LLVM `sdiv` truncates toward zero (C99). awk's int() also
-            // truncates toward zero, so int(a/b) is correct.
             let _ = writeln!(
                 out,
-                "    {} = int({} / {})",
+                "{indent}{} = int({} / {})",
                 name_to_var(&i.dest),
                 operand_str(&i.operand0),
                 operand_str(&i.operand1)
@@ -94,22 +115,43 @@ fn emit_instruction(out: &mut String, instr: &Instruction) -> Result<()> {
             Ok(())
         }
         SRem(i) => {
-            // a - trunc(a/b) * b — matches LLVM signed remainder semantics.
             let dest = name_to_var(&i.dest);
             let a = operand_str(&i.operand0);
             let b = operand_str(&i.operand1);
-            let _ = writeln!(out, "    {dest} = {a} - int({a} / {b}) * {b}");
+            let _ = writeln!(out, "{indent}{dest} = {a} - int({a} / {b}) * {b}");
             Ok(())
         }
-        Call(call) => emit_call(out, call),
+        ICmp(i) => binop(out, indent, &i.dest, &i.operand0, icmp_op(i.predicate), &i.operand1),
+        Phi(_) => Ok(()),
+        Call(call) => emit_call(out, call, indent),
         other => bail!("instruction not implemented: {other}"),
     }
 }
 
-fn binop(out: &mut String, dest: &Name, lhs: &Operand, op: &str, rhs: &Operand) -> Result<()> {
+fn icmp_op(p: IntPredicate) -> &'static str {
+    // Unsigned predicates currently emit signed comparison; correct only
+    // for non-negative operands. Tightening this up is a follow-up.
+    match p {
+        IntPredicate::EQ => "==",
+        IntPredicate::NE => "!=",
+        IntPredicate::SGT | IntPredicate::UGT => ">",
+        IntPredicate::SGE | IntPredicate::UGE => ">=",
+        IntPredicate::SLT | IntPredicate::ULT => "<",
+        IntPredicate::SLE | IntPredicate::ULE => "<=",
+    }
+}
+
+fn binop(
+    out: &mut String,
+    indent: &str,
+    dest: &Name,
+    lhs: &Operand,
+    op: &str,
+    rhs: &Operand,
+) -> Result<()> {
     let _ = writeln!(
         out,
-        "    {} = {} {op} {}",
+        "{indent}{} = {} {op} {}",
         name_to_var(dest),
         operand_str(lhs),
         operand_str(rhs)
@@ -117,7 +159,7 @@ fn binop(out: &mut String, dest: &Name, lhs: &Operand, op: &str, rhs: &Operand) 
     Ok(())
 }
 
-fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call) -> Result<()> {
+fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) -> Result<()> {
     let target = match &call.function {
         Either::Right(Operand::ConstantOperand(c)) => match c.as_ref() {
             Constant::GlobalReference { name, .. } => match name {
@@ -135,31 +177,85 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call) -> Result<()> 
 
     match &call.dest {
         Some(dest) => {
-            let _ = writeln!(out, "    {} = {call_expr}", name_to_var(dest));
+            let _ = writeln!(out, "{indent}{} = {call_expr}", name_to_var(dest));
         }
         None => {
-            let _ = writeln!(out, "    {call_expr}");
+            let _ = writeln!(out, "{indent}{call_expr}");
         }
     }
     Ok(())
 }
 
-fn emit_terminator(out: &mut String, term: &Terminator) -> Result<()> {
+fn emit_terminator(
+    out: &mut String,
+    term: &Terminator,
+    current_block: &Name,
+    func: &Function,
+    indent: &str,
+) -> Result<()> {
     use Terminator::*;
     match term {
         Ret(r) => {
             match &r.return_operand {
                 Some(op) => {
-                    let _ = writeln!(out, "    return {}", operand_str(op));
+                    let _ = writeln!(out, "{indent}return {}", operand_str(op));
                 }
                 None => {
-                    let _ = writeln!(out, "    return");
+                    let _ = writeln!(out, "{indent}return");
                 }
             }
             Ok(())
         }
+        Br(b) => emit_branch(out, indent, &b.dest, current_block, func),
+        CondBr(b) => {
+            let cond = operand_str(&b.condition);
+            let _ = writeln!(out, "{indent}if ({cond}) {{");
+            let inner = format!("{indent}    ");
+            emit_branch(out, &inner, &b.true_dest, current_block, func)?;
+            let _ = writeln!(out, "{indent}}} else {{");
+            emit_branch(out, &inner, &b.false_dest, current_block, func)?;
+            let _ = writeln!(out, "{indent}}}");
+            Ok(())
+        }
         other => bail!("terminator not implemented: {other}"),
     }
+}
+
+fn emit_branch(
+    out: &mut String,
+    indent: &str,
+    target: &Name,
+    current_block: &Name,
+    func: &Function,
+) -> Result<()> {
+    let target_bb = func
+        .basic_blocks
+        .iter()
+        .find(|b| &b.name == target)
+        .ok_or_else(|| anyhow!("branch target `{target}` not found in function `{}`", func.name))?;
+
+    // Resolve phis sequentially. This is correct as long as no phi
+    // destination is itself an incoming value for another phi in the same
+    // block (the swap/cycle case). Common loop bodies emitted by clang do
+    // not hit this; we'll switch to a temp-based parallel copy if it bites.
+    for instr in &target_bb.instrs {
+        if let Instruction::Phi(phi) = instr {
+            let (val, _) = phi
+                .incoming_values
+                .iter()
+                .find(|(_, src)| src == current_block)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "phi `{}` has no incoming value from `{current_block}` in `{}`",
+                        phi.dest,
+                        func.name
+                    )
+                })?;
+            let _ = writeln!(out, "{indent}{} = {}", name_to_var(&phi.dest), operand_str(val));
+        }
+    }
+    let _ = writeln!(out, "{indent}block = \"{}\"", block_label(target));
+    Ok(())
 }
 
 fn operand_str(op: &Operand) -> String {
@@ -196,6 +292,13 @@ fn name_to_var(name: &Name) -> String {
 
 fn func_to_var(name: &str) -> String {
     format!("fn_{}", sanitize(name))
+}
+
+fn block_label(name: &Name) -> String {
+    match name {
+        Name::Number(n) => format!("b{n}"),
+        Name::Name(s) => format!("b_{}", sanitize(s)),
+    }
 }
 
 fn sanitize(s: &str) -> String {
