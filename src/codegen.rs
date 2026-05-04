@@ -9,6 +9,7 @@ use llvm_ir::{
     Constant, ConstantRef, Function, Instruction, IntPredicate, Module, Name, Operand, Terminator,
     Type, TypeRef,
     constant::Float,
+    instruction::RMWBinOp,
     predicates::FPPredicate,
     types::{FPType, NamedStructDef, Typed, Types},
 };
@@ -20,9 +21,42 @@ function _ashr(a, n) {
 function _zext(a, w) {
     return a < 0 ? a + (2 ^ w) : a
 }
-function _trunc(a, w,    m) {
-    m = and(a, (2 ^ w) - 1)
-    return m >= (2 ^ (w - 1)) ? m - (2 ^ w) : m
+function _trunc(a, w,    m, mod) {
+    mod = 2 ^ w
+    m = a % mod
+    if (m < 0) m += mod
+    return m >= mod / 2 ? m - mod : m
+}
+# Bitwise wrappers that accept signed operands. gawk's and/or/xor reject
+# negative inputs, so zext both sides to unsigned, run the op, then
+# reinterpret the result back at width w.
+function _and(a, b, w,    ua, ub, r) {
+    ua = a < 0 ? a + 2 ^ w : a
+    ub = b < 0 ? b + 2 ^ w : b
+    r = and(ua, ub)
+    return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
+}
+function _or(a, b, w,    ua, ub, r) {
+    ua = a < 0 ? a + 2 ^ w : a
+    ub = b < 0 ? b + 2 ^ w : b
+    r = or(ua, ub)
+    return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
+}
+function _xor(a, b, w,    ua, ub, r) {
+    ua = a < 0 ? a + 2 ^ w : a
+    ub = b < 0 ? b + 2 ^ w : b
+    r = xor(ua, ub)
+    return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
+}
+function _shl(a, n, w,    ua, r) {
+    ua = a < 0 ? a + 2 ^ w : a
+    r = lshift(ua, n) % (2 ^ w)
+    return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
+}
+function _lshr(a, n, w,    ua, r) {
+    ua = a < 0 ? a + 2 ^ w : a
+    r = rshift(ua, n)
+    return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
 }
 function _alloc(size,    a) {
     a = NEXT_ADDR
@@ -118,6 +152,11 @@ function _strlen(p,    n) {
     while (MEM[p + n] != 0) n++
     return n
 }
+# Darwin libc: memset_pattern{4,8,16} fill `n` bytes of `dst` by repeating
+# the byte pattern at `pat`. Used by clang as a memset optimization.
+function _memset_pattern(dst, pat, n, plen,    i) {
+    for (i = 0; i < n; i++) MEM[dst + i] = MEM[pat + (i % plen)]
+}
 # C++ catch-clause matching. EXC_TYPE_ID holds the thrown typeinfo's
 # address; PARENT_TI[ti] gives the parent under Itanium __si_class_type_info.
 # When the catch clause is compatible, return EXC_TYPE_ID so the IR's
@@ -207,6 +246,24 @@ pub fn emit(module: &Module) -> Result<String> {
     for func in &module.functions {
         emit_function(&mut out, func, &module.types)?;
     }
+
+    // Stubs for `declare`-only functions (libc++ internals, etc.). Most are
+    // intercepted by emit_libc at the call site, but if a stray direct call
+    // slips through we want it to no-op rather than crash gawk at runtime.
+    for decl in &module.func_declarations {
+        let params: Vec<String> = decl
+            .parameters
+            .iter()
+            .map(|p| name_to_var(&p.name))
+            .collect();
+        let _ = writeln!(
+            &mut out,
+            "function {}({}) {{}}",
+            func_to_var(&decl.name),
+            params.join(", ")
+        );
+    }
+    let _ = writeln!(&mut out);
 
     emit_icall_dispatcher(&mut out, module, &fn_ids)?;
     Ok(out)
@@ -304,6 +361,20 @@ fn emit_globals_init(
     for gv in &externs {
         let _ = writeln!(out, "    {} = _alloc(8)", global_to_var(&gv.name));
     }
+    // Function pointer registry has to be set BEFORE emit_const_init runs:
+    // vtable initializers reference functions via g_<name>, and we need that
+    // awk variable to already hold the function id at the moment _store
+    // captures the value. Otherwise the slot gets written as 0/empty and
+    // every virtual call later dispatches to fp=0.
+    let mut fns: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|f| fn_ids.get(&f.name).map(|id| (f.name.as_str(), *id)))
+        .collect();
+    fns.sort_by_key(|(_, id)| *id);
+    for (name, id) in fns {
+        let _ = writeln!(out, "    g_{} = {id}", sanitize(name));
+    }
     for (gv, init) in &with_init {
         let storage_ty = init.get_type(&module.types);
         emit_const_init(
@@ -314,17 +385,6 @@ fn emit_globals_init(
             &module.types,
             "    ",
         )?;
-    }
-    // Function pointer registry: a Constant::GlobalReference to a function
-    // emits as g_<name> just like a data global, but resolves to its int id.
-    let mut fns: Vec<_> = module
-        .functions
-        .iter()
-        .filter_map(|f| fn_ids.get(&f.name).map(|id| (f.name.as_str(), *id)))
-        .collect();
-    fns.sort_by_key(|(_, id)| *id);
-    for (name, id) in fns {
-        let _ = writeln!(out, "    g_{} = {id}", sanitize(name));
     }
     // C++ typeinfo parent registry: lets _typeid_for walk the inheritance
     // chain at catch time. We only handle Itanium __si_class_type_info
@@ -429,9 +489,23 @@ fn emit_const_init(
 }
 
 fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()> {
-    // External declarations (printf, malloc, ...) have no body; intercepted at
-    // the call site, so emit nothing here.
+    // External declarations (printf, malloc, libc++ internals, ...) have no
+    // body. Most are intercepted at the call site by emit_libc. For the rest,
+    // emit a no-op stub so a stray direct call doesn't crash gawk at runtime
+    // — matches our "leak / tolerate" stance toward the C++ standard library.
     if func.basic_blocks.is_empty() {
+        let params: Vec<String> = func
+            .parameters
+            .iter()
+            .map(|p| name_to_var(&p.name))
+            .collect();
+        let _ = writeln!(
+            out,
+            "function {}({}) {{}}",
+            func_to_var(&func.name),
+            params.join(", ")
+        );
+        let _ = writeln!(out);
         return Ok(());
     }
     let params: Vec<String> = func.parameters.iter().map(|p| name_to_var(&p.name)).collect();
@@ -542,6 +616,7 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         ExtractValue(i) => Some(&i.dest),
         InsertValue(i) => Some(&i.dest),
         LandingPad(i) => Some(&i.dest),
+        AtomicRMW(i) => Some(&i.dest),
         _ => None,
     }
 }
@@ -574,12 +649,12 @@ fn emit_instruction(
             let _ = writeln!(out, "{indent}{dest} = {a} - int({a} / {b}) * {b}");
             Ok(())
         }
-        Shl(i) => fn_call(out, indent, &i.dest, "lshift", &[&i.operand0, &i.operand1]),
-        LShr(i) => fn_call(out, indent, &i.dest, "rshift", &[&i.operand0, &i.operand1]),
+        Shl(i) => emit_bitwise(out, indent, &i.dest, "_shl", &i.operand0, &i.operand1),
+        LShr(i) => emit_bitwise(out, indent, &i.dest, "_lshr", &i.operand0, &i.operand1),
         AShr(i) => fn_call(out, indent, &i.dest, "_ashr", &[&i.operand0, &i.operand1]),
-        And(i) => fn_call(out, indent, &i.dest, "and", &[&i.operand0, &i.operand1]),
-        Or(i) => fn_call(out, indent, &i.dest, "or", &[&i.operand0, &i.operand1]),
-        Xor(i) => fn_call(out, indent, &i.dest, "xor", &[&i.operand0, &i.operand1]),
+        And(i) => emit_bitwise(out, indent, &i.dest, "_and", &i.operand0, &i.operand1),
+        Or(i) => emit_bitwise(out, indent, &i.dest, "_or", &i.operand0, &i.operand1),
+        Xor(i) => emit_bitwise(out, indent, &i.dest, "_xor", &i.operand0, &i.operand1),
         ZExt(i) => {
             let from_bits = operand_bits(&i.operand)?;
             let _ = writeln!(
@@ -622,7 +697,7 @@ fn emit_instruction(
             );
             Ok(())
         }
-        ICmp(i) => binop(out, indent, &i.dest, &i.operand0, icmp_op(i.predicate), &i.operand1),
+        ICmp(i) => emit_icmp(out, indent, &i.dest, i.predicate, &i.operand0, &i.operand1),
         Phi(_) => Ok(()),
         Call(call) => emit_call(out, call, indent),
         Alloca(a) => {
@@ -654,6 +729,7 @@ fn emit_instruction(
         }
         ExtractValue(ev) => emit_extractvalue(out, ev, indent, types),
         InsertValue(iv) => emit_insertvalue(out, iv, indent, types),
+        AtomicRMW(a) => emit_atomicrmw(out, a, indent, types),
         LandingPad(lp) => {
             // Materialize the {ptr, i32} aggregate from the global EXC_*
             // state set by __cxa_throw / Resume. Reaching landingpad means
@@ -730,7 +806,19 @@ fn emit_instruction(
         // awk has a single numeric type, so int<->float conversions outside
         // memory are no-ops apart from truncation toward zero for f->i.
         SIToFP(i) => fp_noop(out, indent, &i.dest, &i.operand),
-        UIToFP(i) => fp_noop(out, indent, &i.dest, &i.operand),
+        UIToFP(i) => {
+            // Operand is signed in our model (sign-extended); reinterpret as
+            // unsigned before promoting to float, otherwise an i8 byte 0xFF
+            // (= -1 in our world) becomes -1.0 instead of 255.0.
+            let bits = operand_bits(&i.operand)?;
+            let _ = writeln!(
+                out,
+                "{indent}{} = _zext({}, {bits})",
+                name_to_var(&i.dest),
+                operand_str(&i.operand)
+            );
+            Ok(())
+        }
         FPToSI(i) => fp_to_int(out, indent, &i.dest, &i.operand),
         FPToUI(i) => fp_to_int(out, indent, &i.dest, &i.operand),
         FPExt(i) => fp_noop(out, indent, &i.dest, &i.operand),
@@ -740,8 +828,6 @@ fn emit_instruction(
 }
 
 fn icmp_op(p: IntPredicate) -> &'static str {
-    // Unsigned predicates currently emit signed comparison; correct only
-    // for non-negative operands. Tightening this up is a follow-up.
     match p {
         IntPredicate::EQ => "==",
         IntPredicate::NE => "!=",
@@ -750,6 +836,59 @@ fn icmp_op(p: IntPredicate) -> &'static str {
         IntPredicate::SLT | IntPredicate::ULT => "<",
         IntPredicate::SLE | IntPredicate::ULE => "<=",
     }
+}
+
+fn icmp_is_unsigned(p: IntPredicate) -> bool {
+    matches!(
+        p,
+        IntPredicate::UGT | IntPredicate::UGE | IntPredicate::ULT | IntPredicate::ULE
+    )
+}
+
+fn emit_icmp(
+    out: &mut String,
+    indent: &str,
+    dest: &Name,
+    p: IntPredicate,
+    lhs: &Operand,
+    rhs: &Operand,
+) -> Result<()> {
+    let op = icmp_op(p);
+    let dest = name_to_var(dest);
+    let lhs_s = operand_str(lhs);
+    let rhs_s = operand_str(rhs);
+    if icmp_is_unsigned(p) {
+        // Reinterpret both sides as unsigned at the operand's bit width so
+        // negative values (which represent high-bit-set bit patterns in our
+        // signed model) compare in the right order.
+        let bits = operand_bits(lhs)?;
+        let _ = writeln!(
+            out,
+            "{indent}{dest} = _zext({lhs_s}, {bits}) {op} _zext({rhs_s}, {bits})"
+        );
+    } else {
+        let _ = writeln!(out, "{indent}{dest} = {lhs_s} {op} {rhs_s}");
+    }
+    Ok(())
+}
+
+fn emit_bitwise(
+    out: &mut String,
+    indent: &str,
+    dest: &Name,
+    helper: &str,
+    lhs: &Operand,
+    rhs: &Operand,
+) -> Result<()> {
+    let bits = operand_bits(lhs)?;
+    let _ = writeln!(
+        out,
+        "{indent}{} = {helper}({}, {}, {bits})",
+        name_to_var(dest),
+        operand_str(lhs),
+        operand_str(rhs)
+    );
+    Ok(())
 }
 
 fn fp_noop(out: &mut String, indent: &str, dest: &Name, op: &Operand) -> Result<()> {
@@ -936,6 +1075,15 @@ fn emit_libc(
         "memmove" => assign(format!("_memmove({}, {}, {})", args[0], args[1], args[2]), out),
         "memset" => assign(format!("_memset({}, {}, {})", args[0], args[1], args[2]), out),
         "strlen" => assign(format!("_strlen({})", args[0]), out),
+        "memset_pattern4" => {
+            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 4)", args[0], args[1], args[2]);
+        }
+        "memset_pattern8" => {
+            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 8)", args[0], args[1], args[2]);
+        }
+        "memset_pattern16" => {
+            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 16)", args[0], args[1], args[2]);
+        }
         // C++ ABI exception runtime. Stack unwinding doesn't exist here;
         // we model it with a global UNWINDING flag, EXC_OBJ, and EXC_TYPE_ID
         // (the typeinfo address, which we use as the type id).
@@ -1025,6 +1173,23 @@ fn emit_intrinsic(
         // (dst, val, len, is_volatile)
         "memset" if args.len() >= 3 => {
             let _ = writeln!(out, "{indent}_memset({}, {}, {})", args[0], args[1], args[2]);
+        }
+        // Fused multiply-add (a * b + c). Float since gawk is double; for ints
+        // it shows up identically. We don't get IEEE 754 fma rounding semantics.
+        "fmuladd" | "fma" if args.len() == 3 => {
+            assign(format!("{} * {} + {}", args[0], args[1], args[2]), out);
+        }
+        "sqrt" if args.len() == 1 => {
+            assign(format!("sqrt({})", args[0]), out);
+        }
+        "fabs" if args.len() == 1 => {
+            assign(format!("({a} < 0 ? -{a} : {a})", a = args[0]), out);
+        }
+        "floor" if args.len() == 1 => {
+            assign(format!("({a} >= 0 ? int({a}) : -int(-{a} + (-{a} > int(-{a}))))", a = args[0]), out);
+        }
+        "ceil" if args.len() == 1 => {
+            assign(format!("({a} >= 0 ? int({a}) + ({a} > int({a})) : -int(-{a}))", a = args[0]), out);
         }
         // Catch matching honours the typeinfo parent chain (single
         // inheritance) instead of identity, so `catch (Base&)` accepts
@@ -1475,6 +1640,50 @@ fn emit_extractvalue(
     } else {
         emit_load_at(out, indent, &dest, &field, &leaf_ty)?;
     }
+    Ok(())
+}
+
+// awk is single-threaded, so atomicrmw collapses to load + op + store with
+// the old value returned. We support the integer ops that show up in
+// shared_ptr / atomic<int> ref-count code; floats / float-{Max,Min} bail.
+fn emit_atomicrmw(
+    out: &mut String,
+    a: &llvm_ir::instruction::AtomicRMW,
+    indent: &str,
+    types: &Types,
+) -> Result<()> {
+    let addr = operand_str(&a.address);
+    let val = operand_str(&a.value);
+    let val_ty = a.value.get_type(types);
+    let dest = name_to_var(&a.dest);
+    let load_expr = match val_ty.as_ref() {
+        Type::IntegerType { bits } => format!("_load({addr}, {bits})"),
+        Type::PointerType { .. } => format!("_load({addr}, 64)"),
+        other => bail!("atomicrmw on type {other} not supported"),
+    };
+    let bits = match val_ty.as_ref() {
+        Type::IntegerType { bits } => *bits,
+        Type::PointerType { .. } => 64,
+        _ => unreachable!(),
+    };
+    let new_expr = match a.operation {
+        RMWBinOp::Xchg => val.clone(),
+        RMWBinOp::Add => format!("{dest} + {val}"),
+        RMWBinOp::Sub => format!("{dest} - {val}"),
+        RMWBinOp::And => format!("and({dest}, {val})"),
+        RMWBinOp::Or => format!("or({dest}, {val})"),
+        RMWBinOp::Xor => format!("xor({dest}, {val})"),
+        RMWBinOp::Nand => format!("xor(and({dest}, {val}), -1)"),
+        RMWBinOp::Max | RMWBinOp::UMax => {
+            format!("({dest} > {val}) ? {dest} : {val}")
+        }
+        RMWBinOp::Min | RMWBinOp::UMin => {
+            format!("({dest} < {val}) ? {dest} : {val}")
+        }
+        other => bail!("atomicrmw operation {other:?} not supported"),
+    };
+    let _ = writeln!(out, "{indent}{dest} = {load_expr}");
+    let _ = writeln!(out, "{indent}_store({addr}, {new_expr}, {bits})");
     Ok(())
 }
 
