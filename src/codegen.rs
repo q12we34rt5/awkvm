@@ -265,7 +265,15 @@ fn emit_globals_init(
         .iter()
         .filter_map(|gv| gv.initializer.as_ref().map(|i| (gv, i)))
         .collect();
-    if with_init.is_empty() && fn_ids.is_empty() {
+    // External globals (no initializer) — typeinfo objects from libc++abi
+    // mostly. They need a stable address so identity comparison works; the
+    // 8-byte sentinel content is irrelevant for typeid matching.
+    let externs: Vec<_> = module
+        .global_vars
+        .iter()
+        .filter(|gv| gv.initializer.is_none())
+        .collect();
+    if with_init.is_empty() && externs.is_empty() && fn_ids.is_empty() {
         return Ok(());
     }
     let _ = writeln!(out, "BEGIN {{");
@@ -275,6 +283,9 @@ fn emit_globals_init(
         let storage_ty = init.get_type(&module.types);
         let size = type_size_bytes(&storage_ty, &module.types)?;
         let _ = writeln!(out, "    {} = _alloc({size})", global_to_var(&gv.name));
+    }
+    for gv in &externs {
+        let _ = writeln!(out, "    {} = _alloc(8)", global_to_var(&gv.name));
     }
     for (gv, init) in &with_init {
         let storage_ty = init.get_type(&module.types);
@@ -365,14 +376,21 @@ fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()>
     let multi_block = func.basic_blocks.len() > 1;
 
     let mut locals: BTreeSet<String> = BTreeSet::new();
+    let add = |name: &Name, locals: &mut BTreeSet<String>| {
+        let var = name_to_var(name);
+        if !params.contains(&var) {
+            locals.insert(var);
+        }
+    };
     for bb in &func.basic_blocks {
         for instr in &bb.instrs {
             if let Some(name) = instruction_dest(instr) {
-                let var = name_to_var(name);
-                if !params.contains(&var) {
-                    locals.insert(var);
-                }
+                add(name, &mut locals);
             }
+        }
+        // Invoke is a terminator that produces an SSA value.
+        if let Terminator::Invoke(inv) = &bb.term {
+            add(&inv.result, &mut locals);
         }
     }
     if multi_block {
@@ -461,6 +479,7 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         FPTrunc(i) => Some(&i.dest),
         ExtractValue(i) => Some(&i.dest),
         InsertValue(i) => Some(&i.dest),
+        LandingPad(i) => Some(&i.dest),
         _ => None,
     }
 }
@@ -573,6 +592,18 @@ fn emit_instruction(
         }
         ExtractValue(ev) => emit_extractvalue(out, ev, indent, types),
         InsertValue(iv) => emit_insertvalue(out, iv, indent, types),
+        LandingPad(lp) => {
+            // Materialize the {ptr, i32} aggregate from the global EXC_*
+            // state set by __cxa_throw / Resume. Reaching landingpad means
+            // we're handling, so clear UNWINDING.
+            let dest = name_to_var(&lp.dest);
+            let size = type_size_bytes(&lp.result_type, types)?;
+            let _ = writeln!(out, "{indent}{dest} = _alloc({size})");
+            let _ = writeln!(out, "{indent}_store({dest}, EXC_OBJ, 64)");
+            let _ = writeln!(out, "{indent}_store({dest} + 8, EXC_TYPE_ID, 32)");
+            let _ = writeln!(out, "{indent}UNWINDING = 0");
+            Ok(())
+        }
         GetElementPtr(g) => emit_gep(out, g, indent, types),
         BitCast(c) => {
             let dest = name_to_var(&c.dest);
@@ -760,6 +791,10 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
             let _ = writeln!(out, "{indent}{call_expr}");
         }
     }
+    // Propagate exceptions: a regular call to a user function that throws
+    // sets UNWINDING; we must abandon the rest of this function so the
+    // caller (or its enclosing landingpad) can react.
+    let _ = writeln!(out, "{indent}if (UNWINDING) return");
     Ok(())
 }
 
@@ -789,6 +824,7 @@ fn emit_indirect_call(
             let _ = writeln!(out, "{indent}{call_expr}");
         }
     }
+    let _ = writeln!(out, "{indent}if (UNWINDING) return");
     Ok(())
 }
 
@@ -837,6 +873,25 @@ fn emit_libc(
         "memcpy" => assign(format!("_memcpy({}, {}, {})", args[0], args[1], args[2]), out),
         "memmove" => assign(format!("_memmove({}, {}, {})", args[0], args[1], args[2]), out),
         "memset" => assign(format!("_memset({}, {}, {})", args[0], args[1], args[2]), out),
+        // C++ ABI exception runtime. Stack unwinding doesn't exist here;
+        // we model it with a global UNWINDING flag, EXC_OBJ, and EXC_TYPE_ID
+        // (the typeinfo address, which we use as the type id).
+        "__cxa_allocate_exception" => assign(format!("_alloc({})", args[0]), out),
+        "__cxa_throw" => {
+            // (obj, typeinfo, dtor) — drop the destructor, set globals, return.
+            // The IR emits `unreachable` after this; the early return here
+            // makes that explicit.
+            let _ = writeln!(out, "{indent}EXC_OBJ = {}", args[0]);
+            let _ = writeln!(out, "{indent}EXC_TYPE_ID = {}", args[1]);
+            let _ = writeln!(out, "{indent}UNWINDING = 1");
+            let _ = writeln!(out, "{indent}return");
+        }
+        "__cxa_begin_catch" => assign(args[0].clone(), out),
+        "__cxa_end_catch" => {}
+        "__cxa_rethrow" => {
+            let _ = writeln!(out, "{indent}UNWINDING = 1");
+            let _ = writeln!(out, "{indent}return");
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -899,6 +954,10 @@ fn emit_intrinsic(
         "memset" if args.len() >= 3 => {
             let _ = writeln!(out, "{indent}_memset({}, {}, {})", args[0], args[1], args[2]);
         }
+        // The selector matches a typeinfo by the typeinfo's own address.
+        "eh" if args.len() == 1 => {
+            assign(args[0].clone(), out);
+        }
         // Pure markers for the optimizer; nothing to emit at runtime.
         "lifetime" | "dbg" | "assume" | "experimental" => {}
         _ => bail!("intrinsic `{full_name}` is not implemented yet"),
@@ -955,8 +1014,59 @@ fn emit_terminator(
             }
             Ok(())
         }
+        Invoke(inv) => emit_invoke(out, inv, current_block, func, indent),
+        Resume(r) => {
+            let addr = operand_str(&r.operand);
+            let _ = writeln!(out, "{indent}EXC_OBJ = _load({addr}, 64)");
+            let _ = writeln!(out, "{indent}EXC_TYPE_ID = _load({addr} + 8, 32)");
+            let _ = writeln!(out, "{indent}UNWINDING = 1");
+            let _ = writeln!(out, "{indent}return");
+            Ok(())
+        }
+        Unreachable(_) => {
+            // No semantics, but the block must end with a return so the
+            // multi-block dispatcher loop exits.
+            let _ = writeln!(out, "{indent}return");
+            Ok(())
+        }
         other => bail!("terminator not implemented: {other}"),
     }
+}
+
+fn emit_invoke(
+    out: &mut String,
+    inv: &llvm_ir::terminator::Invoke,
+    current_block: &Name,
+    func: &Function,
+    indent: &str,
+) -> Result<()> {
+    let target_name = match &inv.function {
+        Either::Right(Operand::ConstantOperand(c)) => match c.as_ref() {
+            Constant::GlobalReference { name, .. } => match name {
+                Name::Name(s) => s.to_string(),
+                Name::Number(n) => n.to_string(),
+            },
+            _ => bail!("invoke target is not a global reference"),
+        },
+        Either::Right(_) => bail!("indirect invoke not supported yet"),
+        Either::Left(_) => bail!("inline assembly invoke not supported"),
+    };
+
+    let args: Vec<String> = inv.arguments.iter().map(|(op, _)| operand_str(op)).collect();
+    let result = name_to_var(&inv.result);
+
+    if !emit_libc(out, &target_name, &args, Some(&inv.result), indent)? {
+        let target = format!("fn_{}", sanitize(&target_name));
+        let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));
+    }
+
+    let _ = writeln!(out, "{indent}if (UNWINDING) {{");
+    let inner = format!("{indent}    ");
+    emit_branch(out, &inner, &inv.exception_label, current_block, func)?;
+    let _ = writeln!(out, "{indent}}} else {{");
+    emit_branch(out, &inner, &inv.return_label, current_block, func)?;
+    let _ = writeln!(out, "{indent}}}");
+    Ok(())
 }
 
 fn emit_branch(
