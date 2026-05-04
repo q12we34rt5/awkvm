@@ -459,6 +459,8 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         FPToUI(i) => Some(&i.dest),
         FPExt(i) => Some(&i.dest),
         FPTrunc(i) => Some(&i.dest),
+        ExtractValue(i) => Some(&i.dest),
+        InsertValue(i) => Some(&i.dest),
         _ => None,
     }
 }
@@ -561,35 +563,16 @@ fn emit_instruction(
         Load(l) => {
             let dest = name_to_var(&l.dest);
             let addr = operand_str(&l.address);
-            let load_expr = match l.loaded_ty.as_ref() {
-                Type::FPType(FPType::Single) => format!("_load_f32({addr})"),
-                Type::FPType(FPType::Double) => format!("_load_f64({addr})"),
-                _ => {
-                    let bits = mem_bits(&l.loaded_ty)?;
-                    format!("_load({addr}, {bits})")
-                }
-            };
-            let _ = writeln!(out, "{indent}{dest} = {load_expr}");
-            Ok(())
+            emit_load_at(out, indent, &dest, &addr, &l.loaded_ty)
         }
         Store(s) => {
             let addr = operand_str(&s.address);
             let val = operand_str(&s.value);
             let val_ty = s.value.get_type(types);
-            match val_ty.as_ref() {
-                Type::FPType(FPType::Single) => {
-                    let _ = writeln!(out, "{indent}_store_f32({addr}, {val})");
-                }
-                Type::FPType(FPType::Double) => {
-                    let _ = writeln!(out, "{indent}_store_f64({addr}, {val})");
-                }
-                _ => {
-                    let bits = operand_mem_bits(&s.value)?;
-                    let _ = writeln!(out, "{indent}_store({addr}, {val}, {bits})");
-                }
-            }
-            Ok(())
+            emit_store_at(out, indent, &addr, &val, &val_ty)
         }
+        ExtractValue(ev) => emit_extractvalue(out, ev, indent, types),
+        InsertValue(iv) => emit_insertvalue(out, iv, indent, types),
         GetElementPtr(g) => emit_gep(out, g, indent, types),
         BitCast(c) => {
             let dest = name_to_var(&c.dest);
@@ -1080,18 +1063,6 @@ fn mem_bits(ty: &TypeRef) -> Result<u32> {
     }
 }
 
-fn operand_mem_bits(op: &Operand) -> Result<u32> {
-    match op {
-        Operand::LocalOperand { ty, .. } => mem_bits(ty),
-        Operand::ConstantOperand(c) => match c.as_ref() {
-            Constant::Int { bits, .. } => Ok(*bits),
-            Constant::Null(_) => Ok(64),
-            other => bail!("cannot determine store size for constant {other}"),
-        },
-        Operand::MetadataOperand => bail!("metadata operand has no size"),
-    }
-}
-
 fn type_size_bytes(ty: &TypeRef, types: &Types) -> Result<u64> {
     match ty.as_ref() {
         Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8),
@@ -1172,6 +1143,155 @@ fn struct_layout(elements: &[TypeRef], packed: bool, types: &Types) -> Result<St
 
 fn align_up(x: u64, a: u64) -> u64 {
     if a <= 1 { x } else { (x + a - 1) / a * a }
+}
+
+fn is_aggregate(ty: &TypeRef) -> bool {
+    matches!(
+        ty.as_ref(),
+        Type::StructType { .. } | Type::ArrayType { .. } | Type::NamedStructType { .. }
+    )
+}
+
+fn is_undef_or_zero(op: &Operand) -> bool {
+    if let Operand::ConstantOperand(c) = op {
+        matches!(
+            c.as_ref(),
+            Constant::Undef(_) | Constant::Poison(_) | Constant::AggregateZero(_)
+        )
+    } else {
+        false
+    }
+}
+
+// Walk an aggregate type with constant indices, returning (byte_offset,
+// leaf_type). Used by extractvalue / insertvalue.
+fn aggregate_walk(
+    base_ty: &TypeRef,
+    indices: &[u32],
+    types: &Types,
+) -> Result<(u64, TypeRef)> {
+    let mut current = resolve_named(base_ty.clone(), types)?;
+    let mut offset = 0u64;
+    for &idx in indices {
+        current = resolve_named(current, types)?;
+        match current.as_ref() {
+            Type::ArrayType { element_type, .. } => {
+                let stride = align_up(
+                    type_size_bytes(element_type, types)?,
+                    type_align(element_type, types)?,
+                );
+                offset += stride * idx as u64;
+                current = element_type.clone();
+            }
+            Type::StructType { element_types, is_packed } => {
+                let layout = struct_layout(element_types, *is_packed, types)?;
+                let off = *layout
+                    .offsets
+                    .get(idx as usize)
+                    .ok_or_else(|| anyhow!("aggregate index out of range"))?;
+                offset += off;
+                current = element_types[idx as usize].clone();
+            }
+            other => bail!("aggregate index into non-aggregate type {other}"),
+        }
+    }
+    Ok((offset, current))
+}
+
+fn emit_load_at(
+    out: &mut String,
+    indent: &str,
+    dest: &str,
+    addr: &str,
+    ty: &TypeRef,
+) -> Result<()> {
+    let expr = match ty.as_ref() {
+        Type::FPType(FPType::Single) => format!("_load_f32({addr})"),
+        Type::FPType(FPType::Double) => format!("_load_f64({addr})"),
+        _ => {
+            let bits = mem_bits(ty)?;
+            format!("_load({addr}, {bits})")
+        }
+    };
+    let _ = writeln!(out, "{indent}{dest} = {expr}");
+    Ok(())
+}
+
+fn emit_store_at(
+    out: &mut String,
+    indent: &str,
+    addr: &str,
+    val: &str,
+    ty: &TypeRef,
+) -> Result<()> {
+    match ty.as_ref() {
+        Type::FPType(FPType::Single) => {
+            let _ = writeln!(out, "{indent}_store_f32({addr}, {val})");
+        }
+        Type::FPType(FPType::Double) => {
+            let _ = writeln!(out, "{indent}_store_f64({addr}, {val})");
+        }
+        _ => {
+            let bits = mem_bits(ty)?;
+            let _ = writeln!(out, "{indent}_store({addr}, {val}, {bits})");
+        }
+    }
+    Ok(())
+}
+
+fn emit_extractvalue(
+    out: &mut String,
+    ev: &llvm_ir::instruction::ExtractValue,
+    indent: &str,
+    types: &Types,
+) -> Result<()> {
+    let agg_ty = ev.aggregate.get_type(types);
+    let dest = name_to_var(&ev.dest);
+    let src = operand_str(&ev.aggregate);
+    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &ev.indices, types)?;
+    let field = if offset == 0 { src } else { format!("{src} + {offset}") };
+    if is_aggregate(&leaf_ty) {
+        let leaf_size = type_size_bytes(&leaf_ty, types)?;
+        let _ = writeln!(out, "{indent}{dest} = _alloc({leaf_size})");
+        let _ = writeln!(out, "{indent}_memcpy({dest}, {field}, {leaf_size})");
+    } else {
+        emit_load_at(out, indent, &dest, &field, &leaf_ty)?;
+    }
+    Ok(())
+}
+
+fn emit_insertvalue(
+    out: &mut String,
+    iv: &llvm_ir::instruction::InsertValue,
+    indent: &str,
+    types: &Types,
+) -> Result<()> {
+    let agg_ty = iv.aggregate.get_type(types);
+    let size = type_size_bytes(&agg_ty, types)?;
+    let dest = name_to_var(&iv.dest);
+    let _ = writeln!(out, "{indent}{dest} = _alloc({size})");
+    // Skip the memcpy when the source is undef/poison/zero — MEM auto-zeros
+    // and the insert below will overwrite the relevant field anyway.
+    if !is_undef_or_zero(&iv.aggregate) {
+        let src = operand_str(&iv.aggregate);
+        let _ = writeln!(out, "{indent}_memcpy({dest}, {src}, {size})");
+    }
+    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &iv.indices, types)?;
+    let field = if offset == 0 { dest.clone() } else { format!("{dest} + {offset}") };
+    let val = operand_str(&iv.element);
+    let elem_ty = iv.element.get_type(types);
+    if is_aggregate(&elem_ty) {
+        if !is_undef_or_zero(&iv.element) {
+            let elem_size = type_size_bytes(&elem_ty, types)?;
+            let _ = writeln!(out, "{indent}_memcpy({field}, {val}, {elem_size})");
+        }
+    } else {
+        // The IR-declared leaf type is what the slot is sized for; use it
+        // rather than the element's own type in case of a width mismatch.
+        let _ = leaf_ty;
+        emit_store_at(out, indent, &field, &val, &elem_ty)?;
+    }
+    Ok(())
 }
 
 fn resolve_named(ty: TypeRef, types: &Types) -> Result<TypeRef> {

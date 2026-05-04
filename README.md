@@ -14,9 +14,10 @@ C programs.
 > width conversions, direct + indirect calls, a byte-addressed memory
 > model (alloca / load / store / GEP, with type punning), globals
 > with constant initializers, a basic libc bridge (printf / puts /
-> putchar / malloc / free / exit / memcpy / memset / memmove), and
-> floats (single + double, including IEEE 754 load/store) work today;
-> C++ exceptions are upcoming phases.
+> putchar / malloc / free / exit / memcpy / memset / memmove), floats
+> (single + double, including IEEE 754 load/store), and first-class
+> aggregates (extractvalue / insertvalue / aggregate-typed return)
+> work today; C++ exceptions are upcoming phases.
 
 ## Build
 
