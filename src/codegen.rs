@@ -617,6 +617,7 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         InsertValue(i) => Some(&i.dest),
         LandingPad(i) => Some(&i.dest),
         AtomicRMW(i) => Some(&i.dest),
+        Freeze(i) => Some(&i.dest),
         _ => None,
     }
 }
@@ -730,6 +731,16 @@ fn emit_instruction(
         ExtractValue(ev) => emit_extractvalue(out, ev, indent, types),
         InsertValue(iv) => emit_insertvalue(out, iv, indent, types),
         AtomicRMW(a) => emit_atomicrmw(out, a, indent, types),
+        Freeze(f) => {
+            // Identity for non-poison/undef inputs (the only case we model).
+            let _ = writeln!(
+                out,
+                "{indent}{} = {}",
+                name_to_var(&f.dest),
+                operand_str(&f.operand)
+            );
+            Ok(())
+        }
         LandingPad(lp) => {
             // Materialize the {ptr, i32} aggregate from the global EXC_*
             // state set by __cxa_throw / Resume. Reaching landingpad means
@@ -860,8 +871,12 @@ fn emit_icmp(
     if icmp_is_unsigned(p) {
         // Reinterpret both sides as unsigned at the operand's bit width so
         // negative values (which represent high-bit-set bit patterns in our
-        // signed model) compare in the right order.
-        let bits = operand_bits(lhs)?;
+        // signed model) compare in the right order. Pointers count as 64-bit
+        // for this purpose (mem_bits, not operand_bits).
+        let bits = match lhs {
+            Operand::LocalOperand { ty, .. } => mem_bits(ty)?,
+            _ => operand_bits(lhs)?,
+        };
         let _ = writeln!(
             out,
             "{indent}{dest} = _zext({lhs_s}, {bits}) {op} _zext({rhs_s}, {bits})"
@@ -1182,6 +1197,14 @@ fn emit_intrinsic(
         "sqrt" if args.len() == 1 => {
             assign(format!("sqrt({})", args[0]), out);
         }
+        "sin" if args.len() == 1 => assign(format!("sin({})", args[0]), out),
+        "cos" if args.len() == 1 => assign(format!("cos({})", args[0]), out),
+        "tan" if args.len() == 1 => {
+            assign(format!("(sin({a}) / cos({a}))", a = args[0]), out);
+        }
+        "exp" if args.len() == 1 => assign(format!("exp({})", args[0]), out),
+        "log" if args.len() == 1 => assign(format!("log({})", args[0]), out),
+        "pow" if args.len() == 2 => assign(format!("({} ^ {})", args[0], args[1]), out),
         "fabs" if args.len() == 1 => {
             assign(format!("({a} < 0 ? -{a} : {a})", a = args[0]), out);
         }
@@ -1190,6 +1213,9 @@ fn emit_intrinsic(
         }
         "ceil" if args.len() == 1 => {
             assign(format!("({a} >= 0 ? int({a}) + ({a} > int({a})) : -int(-{a}))", a = args[0]), out);
+        }
+        "trunc" if args.len() == 1 => {
+            assign(format!("({a} >= 0 ? int({a}) : -int(-{a}))", a = args[0]), out);
         }
         // Catch matching honours the typeinfo parent chain (single
         // inheritance) instead of identity, so `catch (Base&)` accepts
