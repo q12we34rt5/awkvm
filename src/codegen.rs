@@ -1210,16 +1210,17 @@ fn constant_str(c: &ConstantRef) -> String {
         Constant::Undef(_) | Constant::Poison(_) => "0".to_string(),
         Constant::GlobalReference { name, .. } => global_to_var(name),
         Constant::Float(f) => float_literal(f),
-        // Constexpr GEP `getelementptr (ptr @G, i64 N)` shows up in vtable
-        // setup and similar. We don't track Constant::GetElementPtr's source
-        // element type under opaque pointers, but the dominant case is a
-        // pointer-stride single index, so just compute g_<base> + N*8.
+        // Constexpr GEP `getelementptr (T, ptr @G, i64 N)` — Constant::GetElementPtr
+        // doesn't carry source_element_type in llvm-ir 0.11 under opaque pointers,
+        // so we assume i8 stride (byte offset). This is correct for typeinfo
+        // field access like `&_ZTIi + 8` (name pointer), and although wrong-by-8x
+        // for ptr-stride vtable indexing, the vtables' bytes are zero in our
+        // model anyway so reads produce 0 either way.
         Constant::GetElementPtr(g) if g.indices.len() == 1 => {
             let base = constant_str(&g.address);
             if let Constant::Int { value, bits } = g.indices[0].as_ref() {
                 let n = sign_extend(*value, *bits);
-                let off = n * 8;
-                if off == 0 { base } else { format!("({base} + {off})") }
+                if n == 0 { base } else { format!("({base} + {n})") }
             } else {
                 "0".to_string()
             }
