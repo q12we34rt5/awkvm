@@ -12,9 +12,10 @@ C programs.
 
 > Work in progress. Integer arithmetic, control flow, bitwise ops,
 > width conversions, direct calls, a byte-addressed memory model
-> (alloca / load / store / GEP, with type punning), and globals with
-> constant initializers (including string literals) work today; a
-> stdlib bridge and floats are upcoming phases.
+> (alloca / load / store / GEP, with type punning), globals with
+> constant initializers, and a basic libc bridge (printf / puts /
+> putchar / malloc / free / exit / memcpy / memset / memmove) work
+> today; floats and indirect calls are upcoming phases.
 
 ## Build
 

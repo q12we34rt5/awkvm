@@ -44,6 +44,71 @@ function _store(addr, val, bits,    n, i, u) {
         u = int(u / 256)
     }
 }
+# Read a NUL-terminated byte string from MEM into an awk string.
+function _cstr(addr,    s, b) {
+    s = ""
+    while ((b = MEM[addr]) != 0) {
+        s = s sprintf("%c", b)
+        addr++
+    }
+    return s
+}
+# Walks the format string, forwarding each spec to gawk's printf and pulling
+# args from the global _PA array (filled by the caller before invocation).
+# Supports %d %i %u %x %X %o %c %s %p and %% (no float specifiers yet).
+function _printf(fmt_addr,    fmt, n, i, c, ai, j, conv, spec) {
+    fmt = _cstr(fmt_addr)
+    n = length(fmt)
+    ai = 0
+    i = 1
+    while (i <= n) {
+        c = substr(fmt, i, 1)
+        if (c != "%") {
+            printf "%s", c
+            i++
+            continue
+        }
+        j = i + 1
+        while (j <= n && index("diuxXocsp%", substr(fmt, j, 1)) == 0) {
+            j++
+        }
+        if (j > n) {
+            printf "%s", substr(fmt, i)
+            break
+        }
+        conv = substr(fmt, j, 1)
+        spec = substr(fmt, i, j - i + 1)
+        if (conv == "%") {
+            printf "%%"
+        } else if (conv == "s") {
+            printf spec, _cstr(_PA[ai]); ai++
+        } else if (conv == "p") {
+            printf "0x%x", _PA[ai]; ai++
+        } else {
+            printf spec, _PA[ai]; ai++
+        }
+        i = j + 1
+    }
+    return 0
+}
+function _memcpy(dst, src, n,    i) {
+    for (i = 0; i < n; i++) MEM[dst + i] = MEM[src + i]
+    return dst
+}
+function _memmove(dst, src, n,    i) {
+    if (dst < src) {
+        for (i = 0; i < n; i++) MEM[dst + i] = MEM[src + i]
+    } else {
+        for (i = n - 1; i >= 0; i--) MEM[dst + i] = MEM[src + i]
+    }
+    return dst
+}
+function _memset(p, v, n,    i, b) {
+    b = v < 0 ? v + 256 : v
+    b = b % 256
+    for (i = 0; i < n; i++) MEM[p + i] = b
+    return p
+}
 "#;
 
 pub fn emit(module: &Module) -> Result<String> {
@@ -155,6 +220,11 @@ fn emit_const_init(
 }
 
 fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()> {
+    // External declarations (printf, malloc, ...) have no body; intercepted at
+    // the call site, so emit nothing here.
+    if func.basic_blocks.is_empty() {
+        return Ok(());
+    }
     let params: Vec<String> = func.parameters.iter().map(|p| name_to_var(&p.name)).collect();
     let multi_block = func.basic_blocks.len() > 1;
 
@@ -452,8 +522,12 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
         return emit_intrinsic(out, call, indent, &target_name, rest);
     }
 
-    let target = format!("fn_{}", sanitize(&target_name));
     let args: Vec<String> = call.arguments.iter().map(|(op, _)| operand_str(op)).collect();
+    if emit_libc(out, &target_name, &args, call.dest.as_ref(), indent)? {
+        return Ok(());
+    }
+
+    let target = format!("fn_{}", sanitize(&target_name));
     let call_expr = format!("{target}({})", args.join(", "));
 
     match &call.dest {
@@ -465,6 +539,71 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
         }
     }
     Ok(())
+}
+
+// Maps stdlib calls onto runtime helpers / gawk built-ins. Returns true when
+// the call was handled.
+fn emit_libc(
+    out: &mut String,
+    name: &str,
+    args: &[String],
+    dest: Option<&Name>,
+    indent: &str,
+) -> Result<bool> {
+    let assign = |expr: String, out: &mut String| match dest {
+        Some(d) => {
+            let _ = writeln!(out, "{indent}{} = {expr}", name_to_var(d));
+        }
+        None => {
+            let _ = writeln!(out, "{indent}{expr}");
+        }
+    };
+    match name {
+        "puts" => {
+            let _ = writeln!(out, "{indent}print _cstr({})", args[0]);
+            // puts returns non-negative on success; pin to 0.
+            if let Some(d) = dest {
+                let _ = writeln!(out, "{indent}{} = 0", name_to_var(d));
+            }
+        }
+        "putchar" => {
+            let _ = writeln!(out, "{indent}printf \"%c\", {}", args[0]);
+            if let Some(d) = dest {
+                let _ = writeln!(out, "{indent}{} = {}", name_to_var(d), args[0]);
+            }
+        }
+        "printf" => emit_printf(out, args, dest, indent),
+        "malloc" => assign(format!("_alloc({})", args[0]), out),
+        "free" => {
+            // No-op: bump allocator never reclaims.
+        }
+        "exit" => {
+            let _ = writeln!(out, "{indent}exit {}", args[0]);
+        }
+        "abort" => {
+            let _ = writeln!(out, "{indent}exit 134");
+        }
+        "memcpy" => assign(format!("_memcpy({}, {}, {})", args[0], args[1], args[2]), out),
+        "memmove" => assign(format!("_memmove({}, {}, {})", args[0], args[1], args[2]), out),
+        "memset" => assign(format!("_memset({}, {}, {})", args[0], args[1], args[2]), out),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn emit_printf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &str) {
+    let _ = writeln!(out, "{indent}delete _PA");
+    for (i, arg) in args.iter().skip(1).enumerate() {
+        let _ = writeln!(out, "{indent}_PA[{i}] = {arg}");
+    }
+    match dest {
+        Some(d) => {
+            let _ = writeln!(out, "{indent}{} = _printf({})", name_to_var(d), args[0]);
+        }
+        None => {
+            let _ = writeln!(out, "{indent}_printf({})", args[0]);
+        }
+    }
 }
 
 fn emit_intrinsic(
@@ -497,6 +636,17 @@ fn emit_intrinsic(
         // llvm.abs takes (value, is_int_min_poison). We ignore the poison flag.
         "abs" if !args.is_empty() => {
             assign(format!("{a} < 0 ? -{a} : {a}", a = args[0]), out);
+        }
+        // (dst, src, len, is_volatile) — drop the volatile flag.
+        "memcpy" if args.len() >= 3 => {
+            let _ = writeln!(out, "{indent}_memcpy({}, {}, {})", args[0], args[1], args[2]);
+        }
+        "memmove" if args.len() >= 3 => {
+            let _ = writeln!(out, "{indent}_memmove({}, {}, {})", args[0], args[1], args[2]);
+        }
+        // (dst, val, len, is_volatile)
+        "memset" if args.len() >= 3 => {
+            let _ = writeln!(out, "{indent}_memset({}, {}, {})", args[0], args[1], args[2]);
         }
         // Pure markers for the optimizer; nothing to emit at runtime.
         "lifetime" | "dbg" | "assume" | "experimental" => {}
