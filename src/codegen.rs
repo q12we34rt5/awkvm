@@ -113,6 +113,11 @@ function _memset(p, v, n,    i, b) {
     for (i = 0; i < n; i++) MEM[p + i] = b
     return p
 }
+function _strlen(p,    n) {
+    n = 0
+    while (MEM[p + n] != 0) n++
+    return n
+}
 # C++ catch-clause matching. EXC_TYPE_ID holds the thrown typeinfo's
 # address; PARENT_TI[ti] gives the parent under Itanium __si_class_type_info.
 # When the catch clause is compatible, return EXC_TYPE_ID so the IR's
@@ -930,6 +935,7 @@ fn emit_libc(
         "memcpy" => assign(format!("_memcpy({}, {}, {})", args[0], args[1], args[2]), out),
         "memmove" => assign(format!("_memmove({}, {}, {})", args[0], args[1], args[2]), out),
         "memset" => assign(format!("_memset({}, {}, {})", args[0], args[1], args[2]), out),
+        "strlen" => assign(format!("_strlen({})", args[0]), out),
         // C++ ABI exception runtime. Stack unwinding doesn't exist here;
         // we model it with a global UNWINDING flag, EXC_OBJ, and EXC_TYPE_ID
         // (the typeinfo address, which we use as the type id).
@@ -1108,24 +1114,39 @@ fn emit_invoke(
     func: &Function,
     indent: &str,
 ) -> Result<()> {
-    let target_name = match &inv.function {
-        Either::Right(Operand::ConstantOperand(c)) => match c.as_ref() {
-            Constant::GlobalReference { name, .. } => match name {
-                Name::Name(s) => s.to_string(),
-                Name::Number(n) => n.to_string(),
-            },
-            _ => bail!("invoke target is not a global reference"),
-        },
-        Either::Right(_) => bail!("indirect invoke not supported yet"),
-        Either::Left(_) => bail!("inline assembly invoke not supported"),
-    };
-
     let args: Vec<String> = inv.arguments.iter().map(|(op, _)| operand_str(op)).collect();
     let result = name_to_var(&inv.result);
 
-    if !emit_libc(out, &target_name, &args, Some(&inv.result), indent)? {
-        let target = format!("fn_{}", sanitize(&target_name));
-        let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));
+    match &inv.function {
+        Either::Right(Operand::ConstantOperand(c)) => {
+            let target_name = match c.as_ref() {
+                Constant::GlobalReference { name, .. } => match name {
+                    Name::Name(s) => s.to_string(),
+                    Name::Number(n) => n.to_string(),
+                },
+                _ => bail!("invoke target is not a global reference"),
+            };
+            if !emit_libc(out, &target_name, &args, Some(&inv.result), indent)? {
+                let target = format!("fn_{}", sanitize(&target_name));
+                let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));
+            }
+        }
+        Either::Right(op) => {
+            // Indirect invoke: dispatch through _icall, then check UNWINDING
+            // the same way as a direct invoke.
+            if args.len() > MAX_ICALL_ARITY {
+                bail!(
+                    "indirect invoke has {} args; dispatcher only supports up to {}",
+                    args.len(),
+                    MAX_ICALL_ARITY
+                );
+            }
+            let fp = operand_str(op);
+            let mut all = vec![fp];
+            all.extend(args);
+            let _ = writeln!(out, "{indent}{result} = _icall({})", all.join(", "));
+        }
+        Either::Left(_) => bail!("inline assembly invoke not supported"),
     }
 
     let _ = writeln!(out, "{indent}if (UNWINDING) {{");

@@ -14,11 +14,13 @@ C programs.
 > width conversions, direct + indirect calls, a byte-addressed memory
 > model (alloca / load / store / GEP, with type punning), globals
 > with constant initializers, a basic libc bridge (printf / puts /
-> putchar / malloc / free / exit / memcpy / memset / memmove), floats
-> (single + double, including IEEE 754 load/store), first-class
-> aggregates, and C++ exceptions with single-inheritance RTTI matching
-> (`catch (Base&)` accepts a `Derived` throw) work today; multiple /
-> virtual inheritance and C++ stdlib are upcoming.
+> putchar / malloc / free / exit / memcpy / memset / memmove / strlen),
+> floats (single + double, IEEE 754 load/store), first-class aggregates,
+> C++ exceptions with single-inheritance RTTI matching, and small
+> C++ stdlib smoke tests (`std::min`, `std::vector<int>`,
+> `std::string`, `std::vector<std::string>`) work today. iostream is
+> out of reach because the implementation lives in libc++ dylib, not
+> the IR.
 
 ## Build
 
