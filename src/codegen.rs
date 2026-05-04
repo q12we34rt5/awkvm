@@ -6,7 +6,7 @@ use either::Either;
 use llvm_ir::{
     Constant, ConstantRef, Function, Instruction, IntPredicate, Module, Name, Operand, Terminator,
     Type, TypeRef,
-    types::{NamedStructDef, Types},
+    types::{NamedStructDef, Typed, Types},
 };
 
 const RUNTIME: &str = r#"BEGIN { NEXT_ADDR = 1 }
@@ -54,6 +54,8 @@ pub fn emit(module: &Module) -> Result<String> {
 
     let _ = writeln!(out, "{RUNTIME}");
 
+    emit_globals_init(&mut out, module)?;
+
     if module.functions.iter().any(|f| f.name == "main") {
         let _ = writeln!(out, "BEGIN {{ exit fn_main() }}");
         let _ = writeln!(out);
@@ -63,6 +65,93 @@ pub fn emit(module: &Module) -> Result<String> {
         emit_function(&mut out, func, &module.types)?;
     }
     Ok(out)
+}
+
+fn emit_globals_init(out: &mut String, module: &Module) -> Result<()> {
+    // gv.ty is the pointer type (`ptr` under opaque pointers); the storage
+    // type comes from the initializer.
+    let with_init: Vec<_> = module
+        .global_vars
+        .iter()
+        .filter_map(|gv| gv.initializer.as_ref().map(|i| (gv, i)))
+        .collect();
+    if with_init.is_empty() {
+        return Ok(());
+    }
+    let _ = writeln!(out, "BEGIN {{");
+    // Two passes: allocate all globals first so initializers may reference
+    // any global address (forward refs are common with .str pools).
+    for (gv, init) in &with_init {
+        let storage_ty = init.get_type(&module.types);
+        let size = type_size_bytes(&storage_ty, &module.types)?;
+        let _ = writeln!(out, "    {} = _alloc({size})", global_to_var(&gv.name));
+    }
+    for (gv, init) in &with_init {
+        let storage_ty = init.get_type(&module.types);
+        emit_const_init(
+            out,
+            &global_to_var(&gv.name),
+            init,
+            &storage_ty,
+            &module.types,
+            "    ",
+        )?;
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+    Ok(())
+}
+
+fn emit_const_init(
+    out: &mut String,
+    addr: &str,
+    c: &ConstantRef,
+    ty: &TypeRef,
+    types: &Types,
+    indent: &str,
+) -> Result<()> {
+    let sub_addr = |off: u64| -> String {
+        if off == 0 {
+            addr.to_string()
+        } else {
+            format!("{addr} + {off}")
+        }
+    };
+    match c.as_ref() {
+        Constant::Int { value, bits } => {
+            let v = sign_extend(*value, *bits);
+            let _ = writeln!(out, "{indent}_store({addr}, {v}, {bits})");
+        }
+        Constant::Null(_) => {
+            let _ = writeln!(out, "{indent}_store({addr}, 0, 64)");
+        }
+        // MEM defaults to 0, so zero-init is a no-op.
+        Constant::AggregateZero(_) | Constant::Undef(_) | Constant::Poison(_) => {}
+        Constant::Array { element_type, elements } => {
+            let elem_size = type_size_bytes(element_type, types)?;
+            let elem_align = type_align(element_type, types)?;
+            let stride = align_up(elem_size, elem_align);
+            for (i, el) in elements.iter().enumerate() {
+                emit_const_init(out, &sub_addr(i as u64 * stride), el, element_type, types, indent)?;
+            }
+        }
+        Constant::Struct { values, is_packed, .. } => {
+            let resolved = resolve_named(ty.clone(), types)?;
+            let elem_types = match resolved.as_ref() {
+                Type::StructType { element_types, .. } => element_types.clone(),
+                other => bail!("struct initializer for non-struct type: {other}"),
+            };
+            let layout = struct_layout(&elem_types, *is_packed, types)?;
+            for (i, val) in values.iter().enumerate() {
+                emit_const_init(out, &sub_addr(layout.offsets[i]), val, &elem_types[i], types, indent)?;
+            }
+        }
+        Constant::GlobalReference { name, .. } => {
+            let _ = writeln!(out, "{indent}_store({addr}, {}, 64)", global_to_var(name));
+        }
+        other => bail!("constant initializer not supported: {other}"),
+    }
+    Ok(())
 }
 
 fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()> {
@@ -518,6 +607,8 @@ fn constant_str(c: &ConstantRef) -> String {
         Constant::Int { value, bits } => sign_extend(*value, *bits).to_string(),
         Constant::Null(_) => "0".to_string(),
         Constant::AggregateZero(_) => "0".to_string(),
+        Constant::Undef(_) | Constant::Poison(_) => "0".to_string(),
+        Constant::GlobalReference { name, .. } => global_to_var(name),
         other => format!("0 /* unsupported constant: {other} */"),
     }
 }
@@ -762,6 +853,13 @@ fn name_to_var(name: &Name) -> String {
 
 fn func_to_var(name: &str) -> String {
     format!("fn_{}", sanitize(name))
+}
+
+fn global_to_var(name: &Name) -> String {
+    match name {
+        Name::Number(n) => format!("g{n}"),
+        Name::Name(s) => format!("g_{}", sanitize(s)),
+    }
 }
 
 fn block_label(name: &Name) -> String {

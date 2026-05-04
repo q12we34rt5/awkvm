@@ -11,9 +11,10 @@ single self-contained `.awk` file is enough to host most "ordinary"
 C programs.
 
 > Work in progress. Integer arithmetic, control flow, bitwise ops,
-> width conversions, direct calls, and a byte-addressed memory model
-> (alloca / load / store / GEP, with type punning) work today; floats
-> and a stdlib bridge are upcoming phases.
+> width conversions, direct calls, a byte-addressed memory model
+> (alloca / load / store / GEP, with type punning), and globals with
+> constant initializers (including string literals) work today; a
+> stdlib bridge and floats are upcoming phases.
 
 ## Build
 
