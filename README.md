@@ -13,9 +13,10 @@ C programs.
 > Work in progress. Integer arithmetic, control flow, bitwise ops,
 > width conversions, direct + indirect calls, a byte-addressed memory
 > model (alloca / load / store / GEP, with type punning), globals
-> with constant initializers, and a basic libc bridge (printf / puts /
-> putchar / malloc / free / exit / memcpy / memset / memmove) work
-> today; floats and C++ exceptions are upcoming phases.
+> with constant initializers, a basic libc bridge (printf / puts /
+> putchar / malloc / free / exit / memcpy / memset / memmove), and
+> floats (single + double, including IEEE 754 load/store) work today;
+> C++ exceptions are upcoming phases.
 
 ## Build
 

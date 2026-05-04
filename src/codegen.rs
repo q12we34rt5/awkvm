@@ -8,7 +8,9 @@ use either::Either;
 use llvm_ir::{
     Constant, ConstantRef, Function, Instruction, IntPredicate, Module, Name, Operand, Terminator,
     Type, TypeRef,
-    types::{NamedStructDef, Typed, Types},
+    constant::Float,
+    predicates::FPPredicate,
+    types::{FPType, NamedStructDef, Typed, Types},
 };
 
 const RUNTIME: &str = r#"BEGIN { NEXT_ADDR = 1 }
@@ -110,6 +112,61 @@ function _memset(p, v, n,    i, b) {
     b = b % 256
     for (i = 0; i < n; i++) MEM[p + i] = b
     return p
+}
+# IEEE 754 single-precision pack/unpack. Subnormals collapse to 0 and
+# inf / NaN are not preserved (Phase 8 limitation).
+function _f32_to_bits(v,    sign, av, e, m) {
+    if (v == 0) return 0
+    if (v < 0) { sign = 1; av = -v } else { sign = 0; av = v }
+    e = 0
+    while (av >= 2) { av /= 2; e++ }
+    while (av < 1) { av *= 2; e-- }
+    m = int((av - 1) * 8388608)
+    if (e + 127 <= 0) return sign * 2147483648
+    if (e + 127 >= 255) return sign * 2147483648 + 2139095040
+    return sign * 2147483648 + (e + 127) * 8388608 + m
+}
+function _f32_from_bits(raw,    sign, bexp, mant) {
+    if (raw < 0) raw += 4294967296
+    sign = int(raw / 2147483648) % 2
+    bexp = int(raw / 8388608) % 256
+    mant = raw % 8388608
+    if (bexp == 0)   return 0
+    if (bexp == 255) return 0
+    return (sign ? -1 : 1) * (1 + mant / 8388608) * (2 ^ (bexp - 127))
+}
+function _load_f32(addr) { return _f32_from_bits(_load(addr, 32)) }
+function _store_f32(addr, v) { _store(addr, _f32_to_bits(v), 32) }
+# IEEE 754 double-precision via two halves; the 64-bit raw pattern
+# wouldn't fit in awk's 53-bit-safe integer range so we never assemble it.
+function _load_f64(addr,    lo, hi, sign, bexp, mhi, m) {
+    lo = _load(addr, 32);     if (lo < 0) lo += 4294967296
+    hi = _load(addr + 4, 32); if (hi < 0) hi += 4294967296
+    sign = int(hi / 2147483648) % 2
+    bexp = int(hi / 1048576) % 2048
+    mhi  = hi % 1048576
+    m = mhi * 4294967296 + lo
+    if (bexp == 0)    return 0
+    if (bexp == 2047) return 0
+    return (sign ? -1 : 1) * (1 + m / 4503599627370496) * (2 ^ (bexp - 1023))
+}
+function _store_f64(addr, v,    sign, av, e, m, mhi, mlo) {
+    if (v == 0) { _store(addr, 0, 32); _store(addr + 4, 0, 32); return }
+    if (v < 0) { sign = 1; av = -v } else { sign = 0; av = v }
+    e = 0
+    while (av >= 2) { av /= 2; e++ }
+    while (av < 1) { av *= 2; e-- }
+    m = (av - 1) * 4503599627370496
+    mhi = int(m / 4294967296)
+    mlo = int(m - mhi * 4294967296)
+    if (e + 1023 <= 0) {
+        _store(addr, 0, 32); _store(addr + 4, sign * 2147483648, 32); return
+    }
+    if (e + 1023 >= 2047) {
+        _store(addr, 0, 32); _store(addr + 4, sign * 2147483648 + 2146435072, 32); return
+    }
+    _store(addr, mlo, 32)
+    _store(addr + 4, sign * 2147483648 + (e + 1023) * 1048576 + mhi, 32)
 }
 "#;
 
@@ -390,6 +447,18 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         BitCast(i) => Some(&i.dest),
         IntToPtr(i) => Some(&i.dest),
         PtrToInt(i) => Some(&i.dest),
+        FAdd(i) => Some(&i.dest),
+        FSub(i) => Some(&i.dest),
+        FMul(i) => Some(&i.dest),
+        FDiv(i) => Some(&i.dest),
+        FNeg(i) => Some(&i.dest),
+        FCmp(i) => Some(&i.dest),
+        SIToFP(i) => Some(&i.dest),
+        UIToFP(i) => Some(&i.dest),
+        FPToSI(i) => Some(&i.dest),
+        FPToUI(i) => Some(&i.dest),
+        FPExt(i) => Some(&i.dest),
+        FPTrunc(i) => Some(&i.dest),
         _ => None,
     }
 }
@@ -490,33 +559,64 @@ fn emit_instruction(
             Ok(())
         }
         Load(l) => {
-            let bits = mem_bits(&l.loaded_ty)?;
-            let _ = writeln!(
-                out,
-                "{indent}{} = _load({}, {bits})",
-                name_to_var(&l.dest),
-                operand_str(&l.address)
-            );
+            let dest = name_to_var(&l.dest);
+            let addr = operand_str(&l.address);
+            let load_expr = match l.loaded_ty.as_ref() {
+                Type::FPType(FPType::Single) => format!("_load_f32({addr})"),
+                Type::FPType(FPType::Double) => format!("_load_f64({addr})"),
+                _ => {
+                    let bits = mem_bits(&l.loaded_ty)?;
+                    format!("_load({addr}, {bits})")
+                }
+            };
+            let _ = writeln!(out, "{indent}{dest} = {load_expr}");
             Ok(())
         }
         Store(s) => {
-            let bits = operand_mem_bits(&s.value)?;
-            let _ = writeln!(
-                out,
-                "{indent}_store({}, {}, {bits})",
-                operand_str(&s.address),
-                operand_str(&s.value)
-            );
+            let addr = operand_str(&s.address);
+            let val = operand_str(&s.value);
+            let val_ty = s.value.get_type(types);
+            match val_ty.as_ref() {
+                Type::FPType(FPType::Single) => {
+                    let _ = writeln!(out, "{indent}_store_f32({addr}, {val})");
+                }
+                Type::FPType(FPType::Double) => {
+                    let _ = writeln!(out, "{indent}_store_f64({addr}, {val})");
+                }
+                _ => {
+                    let bits = operand_mem_bits(&s.value)?;
+                    let _ = writeln!(out, "{indent}_store({addr}, {val}, {bits})");
+                }
+            }
             Ok(())
         }
         GetElementPtr(g) => emit_gep(out, g, indent, types),
         BitCast(c) => {
-            let _ = writeln!(
-                out,
-                "{indent}{} = {}",
-                name_to_var(&c.dest),
-                operand_str(&c.operand)
-            );
+            let dest = name_to_var(&c.dest);
+            let val = operand_str(&c.operand);
+            let src_ty = c.operand.get_type(types);
+            let src_is_fp = matches!(src_ty.as_ref(), Type::FPType(_));
+            let dst_is_fp = matches!(c.to_type.as_ref(), Type::FPType(_));
+            // Same kind on both sides: pure no-op (awk has one number type;
+            // pointers are already byte addresses).
+            let expr = match (src_is_fp, dst_is_fp) {
+                (false, false) | (true, true) => val,
+                (false, true) => match c.to_type.as_ref() {
+                    Type::FPType(FPType::Single) => format!("_f32_from_bits({val})"),
+                    Type::FPType(FPType::Double) => {
+                        bail!("bitcast i64<->double not supported (would exceed awk's 53-bit safe int range)")
+                    }
+                    _ => unreachable!(),
+                },
+                (true, false) => match src_ty.as_ref() {
+                    Type::FPType(FPType::Single) => format!("_f32_to_bits({val})"),
+                    Type::FPType(FPType::Double) => {
+                        bail!("bitcast double<->i64 not supported (would exceed awk's 53-bit safe int range)")
+                    }
+                    _ => unreachable!(),
+                },
+            };
+            let _ = writeln!(out, "{indent}{dest} = {expr}");
             Ok(())
         }
         IntToPtr(c) => {
@@ -537,6 +637,28 @@ fn emit_instruction(
             );
             Ok(())
         }
+        FAdd(i) => binop(out, indent, &i.dest, &i.operand0, "+", &i.operand1),
+        FSub(i) => binop(out, indent, &i.dest, &i.operand0, "-", &i.operand1),
+        FMul(i) => binop(out, indent, &i.dest, &i.operand0, "*", &i.operand1),
+        FDiv(i) => binop(out, indent, &i.dest, &i.operand0, "/", &i.operand1),
+        FNeg(i) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = -{}",
+                name_to_var(&i.dest),
+                operand_str(&i.operand)
+            );
+            Ok(())
+        }
+        FCmp(i) => emit_fcmp(out, indent, &i.dest, &i.operand0, i.predicate, &i.operand1),
+        // awk has a single numeric type, so int<->float conversions outside
+        // memory are no-ops apart from truncation toward zero for f->i.
+        SIToFP(i) => fp_noop(out, indent, &i.dest, &i.operand),
+        UIToFP(i) => fp_noop(out, indent, &i.dest, &i.operand),
+        FPToSI(i) => fp_to_int(out, indent, &i.dest, &i.operand),
+        FPToUI(i) => fp_to_int(out, indent, &i.dest, &i.operand),
+        FPExt(i) => fp_noop(out, indent, &i.dest, &i.operand),
+        FPTrunc(i) => fp_noop(out, indent, &i.dest, &i.operand),
         other => bail!("instruction not implemented: {other}"),
     }
 }
@@ -552,6 +674,44 @@ fn icmp_op(p: IntPredicate) -> &'static str {
         IntPredicate::SLT | IntPredicate::ULT => "<",
         IntPredicate::SLE | IntPredicate::ULE => "<=",
     }
+}
+
+fn fp_noop(out: &mut String, indent: &str, dest: &Name, op: &Operand) -> Result<()> {
+    let _ = writeln!(out, "{indent}{} = {}", name_to_var(dest), operand_str(op));
+    Ok(())
+}
+
+fn fp_to_int(out: &mut String, indent: &str, dest: &Name, op: &Operand) -> Result<()> {
+    let _ = writeln!(out, "{indent}{} = int({})", name_to_var(dest), operand_str(op));
+    Ok(())
+}
+
+// awk has no NaN; ordered and unordered predicates collapse to the same
+// awk operator. ord/uno are baked to their NaN-free answers.
+fn emit_fcmp(
+    out: &mut String,
+    indent: &str,
+    dest: &Name,
+    lhs: &Operand,
+    p: FPPredicate,
+    rhs: &Operand,
+) -> Result<()> {
+    let dest = name_to_var(dest);
+    let a = operand_str(lhs);
+    let b = operand_str(rhs);
+    let expr = match p {
+        FPPredicate::False => "0".to_string(),
+        FPPredicate::True | FPPredicate::ORD => "1".to_string(),
+        FPPredicate::UNO => "0".to_string(),
+        FPPredicate::OEQ | FPPredicate::UEQ => format!("{a} == {b}"),
+        FPPredicate::ONE | FPPredicate::UNE => format!("{a} != {b}"),
+        FPPredicate::OGT | FPPredicate::UGT => format!("{a} > {b}"),
+        FPPredicate::OGE | FPPredicate::UGE => format!("{a} >= {b}"),
+        FPPredicate::OLT | FPPredicate::ULT => format!("{a} < {b}"),
+        FPPredicate::OLE | FPPredicate::ULE => format!("{a} <= {b}"),
+    };
+    let _ = writeln!(out, "{indent}{dest} = {expr}");
+    Ok(())
 }
 
 fn binop(
@@ -867,7 +1027,18 @@ fn constant_str(c: &ConstantRef) -> String {
         Constant::AggregateZero(_) => "0".to_string(),
         Constant::Undef(_) | Constant::Poison(_) => "0".to_string(),
         Constant::GlobalReference { name, .. } => global_to_var(name),
+        Constant::Float(f) => float_literal(f),
         other => format!("0 /* unsupported constant: {other} */"),
+    }
+}
+
+fn float_literal(f: &Float) -> String {
+    // Debug formatting (e.g. "1.0", "3.14") guarantees a decimal point so
+    // awk's strtod parses it as a number rather than juxtaposed tokens.
+    match f {
+        Float::Single(v) => format!("{v:?}"),
+        Float::Double(v) => format!("{v:?}"),
+        other => format!("0 /* unsupported float: {other} */"),
     }
 }
 
@@ -903,6 +1074,8 @@ fn mem_bits(ty: &TypeRef) -> Result<u32> {
     match ty.as_ref() {
         Type::IntegerType { bits } => Ok(*bits),
         Type::PointerType { .. } => Ok(64),
+        Type::FPType(FPType::Single) => Ok(32),
+        Type::FPType(FPType::Double) => Ok(64),
         other => bail!("load/store of type {other} not supported"),
     }
 }
@@ -923,6 +1096,8 @@ fn type_size_bytes(ty: &TypeRef, types: &Types) -> Result<u64> {
     match ty.as_ref() {
         Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8),
         Type::PointerType { .. } => Ok(8),
+        Type::FPType(FPType::Single) => Ok(4),
+        Type::FPType(FPType::Double) => Ok(8),
         Type::ArrayType { element_type, num_elements } => {
             let elem = type_size_bytes(element_type, types)?;
             let align = type_align(element_type, types)?;
@@ -944,6 +1119,8 @@ fn type_align(ty: &TypeRef, types: &Types) -> Result<u64> {
     match ty.as_ref() {
         Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8).map(|b| b.max(1)),
         Type::PointerType { .. } => Ok(8),
+        Type::FPType(FPType::Single) => Ok(4),
+        Type::FPType(FPType::Double) => Ok(8),
         Type::ArrayType { element_type, .. } => type_align(element_type, types),
         Type::StructType { element_types, is_packed } => {
             if *is_packed {
