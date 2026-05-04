@@ -16,9 +16,9 @@ C programs.
 > with constant initializers, a basic libc bridge (printf / puts /
 > putchar / malloc / free / exit / memcpy / memset / memmove), floats
 > (single + double, including IEEE 754 load/store), first-class
-> aggregates, and C++ exception control flow (invoke / landingpad /
-> resume + a minimal `__cxa_*` runtime, exact-typeinfo matching) work
-> today; richer RTTI (inheritance) and C++ stdlib are upcoming.
+> aggregates, and C++ exceptions with single-inheritance RTTI matching
+> (`catch (Base&)` accepts a `Derived` throw) work today; multiple /
+> virtual inheritance and C++ stdlib are upcoming.
 
 ## Build
 

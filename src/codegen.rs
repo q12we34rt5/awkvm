@@ -113,6 +113,18 @@ function _memset(p, v, n,    i, b) {
     for (i = 0; i < n; i++) MEM[p + i] = b
     return p
 }
+# C++ catch-clause matching. EXC_TYPE_ID holds the thrown typeinfo's
+# address; PARENT_TI[ti] gives the parent under Itanium __si_class_type_info.
+# When the catch clause is compatible, return EXC_TYPE_ID so the IR's
+# `icmp eq selector, eh.typeid.for(catch_ti)` matches; else -1.
+function _typeid_for(catch_ti,    cur) {
+    cur = EXC_TYPE_ID
+    while (cur != 0) {
+        if (cur == catch_ti) return EXC_TYPE_ID
+        cur = (cur in PARENT_TI) ? PARENT_TI[cur] : 0
+    }
+    return -1
+}
 # IEEE 754 single-precision pack/unpack. Subnormals collapse to 0 and
 # inf / NaN are not preserved (Phase 8 limitation).
 function _f32_to_bits(v,    sign, av, e, m) {
@@ -309,6 +321,31 @@ fn emit_globals_init(
     for (name, id) in fns {
         let _ = writeln!(out, "    g_{} = {id}", sanitize(name));
     }
+    // C++ typeinfo parent registry: lets _typeid_for walk the inheritance
+    // chain at catch time. We only handle Itanium __si_class_type_info
+    // (single inheritance, 3-field struct: vtable, name, parent_typeinfo).
+    for gv in &module.global_vars {
+        let Name::Name(this_name) = &gv.name else { continue };
+        if !this_name.starts_with("_ZTI") {
+            continue;
+        }
+        let Some(init) = &gv.initializer else { continue };
+        let Constant::Struct { values, .. } = init.as_ref() else { continue };
+        if values.len() != 3 {
+            continue; // 2-field = no parent; 4+ = vmi (multi/virtual), unsupported
+        }
+        let Constant::GlobalReference { name: parent_name, .. } = values[2].as_ref() else { continue };
+        let Name::Name(parent_str) = parent_name else { continue };
+        if !parent_str.starts_with("_ZTI") {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "    PARENT_TI[g_{}] = g_{}",
+            sanitize(this_name),
+            sanitize(parent_str)
+        );
+    }
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
     Ok(())
@@ -358,10 +395,30 @@ fn emit_const_init(
                 emit_const_init(out, &sub_addr(layout.offsets[i]), val, &elem_types[i], types, indent)?;
             }
         }
+        Constant::Float(f) => match ty.as_ref() {
+            Type::FPType(FPType::Single) => {
+                let _ = writeln!(out, "{indent}_store_f32({addr}, {})", float_literal(f));
+            }
+            Type::FPType(FPType::Double) => {
+                let _ = writeln!(out, "{indent}_store_f64({addr}, {})", float_literal(f));
+            }
+            other => bail!("Float initializer at non-FP type {other}"),
+        },
         Constant::GlobalReference { name, .. } => {
             let _ = writeln!(out, "{indent}_store({addr}, {}, 64)", global_to_var(name));
         }
-        other => bail!("constant initializer not supported: {other}"),
+        // Constexpr expressions (GEP / inttoptr / add / etc.) appear in
+        // C++ typeinfo vtable+name fields. We don't model them — leave the
+        // bytes as MEM's implicit zero and rely on the codepath that uses
+        // these globals (currently only RTTI parent-chain walks via field
+        // 2) being separately wired up.
+        other => {
+            let _ = writeln!(
+                out,
+                "{indent}# skip unsupported constant initializer: {}",
+                other.to_string().replace('\n', " ")
+            );
+        }
     }
     Ok(())
 }
@@ -954,9 +1011,11 @@ fn emit_intrinsic(
         "memset" if args.len() >= 3 => {
             let _ = writeln!(out, "{indent}_memset({}, {}, {})", args[0], args[1], args[2]);
         }
-        // The selector matches a typeinfo by the typeinfo's own address.
+        // Catch matching honours the typeinfo parent chain (single
+        // inheritance) instead of identity, so `catch (Base&)` accepts
+        // a `Derived` throw.
         "eh" if args.len() == 1 => {
-            assign(args[0].clone(), out);
+            assign(format!("_typeid_for({})", args[0]), out);
         }
         // Pure markers for the optimizer; nothing to emit at runtime.
         "lifetime" | "dbg" | "assume" | "experimental" => {}
