@@ -1,5 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
+
+const MAX_ICALL_ARITY: usize = 8;
 
 use anyhow::{Result, anyhow, bail};
 use either::Either;
@@ -119,7 +121,9 @@ pub fn emit(module: &Module) -> Result<String> {
 
     let _ = writeln!(out, "{RUNTIME}");
 
-    emit_globals_init(&mut out, module)?;
+    let fn_ids = build_fn_ids(module);
+
+    emit_globals_init(&mut out, module, &fn_ids)?;
 
     if module.functions.iter().any(|f| f.name == "main") {
         let _ = writeln!(out, "BEGIN {{ exit fn_main() }}");
@@ -129,10 +133,74 @@ pub fn emit(module: &Module) -> Result<String> {
     for func in &module.functions {
         emit_function(&mut out, func, &module.types)?;
     }
+
+    emit_icall_dispatcher(&mut out, module, &fn_ids)?;
     Ok(out)
 }
 
-fn emit_globals_init(out: &mut String, module: &Module) -> Result<()> {
+// Assign sequential ids (starting at 1; 0 reserved for null) to every defined
+// function. Declared-only functions are skipped — they have no awk body.
+fn build_fn_ids(module: &Module) -> HashMap<String, i64> {
+    module
+        .functions
+        .iter()
+        .filter(|f| !f.basic_blocks.is_empty())
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), (i + 1) as i64))
+        .collect()
+}
+
+fn emit_icall_dispatcher(
+    out: &mut String,
+    module: &Module,
+    fn_ids: &HashMap<String, i64>,
+) -> Result<()> {
+    if fn_ids.is_empty() {
+        return Ok(());
+    }
+    // Dispatch in id order so the output is stable regardless of HashMap layout.
+    let mut entries: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|f| fn_ids.get(&f.name).map(|id| (f, *id)))
+        .collect();
+    entries.sort_by_key(|(_, id)| *id);
+
+    for (f, _) in &entries {
+        if f.parameters.len() > MAX_ICALL_ARITY {
+            bail!(
+                "function `{}` has {} parameters; indirect dispatcher only supports up to {}",
+                f.name,
+                f.parameters.len(),
+                MAX_ICALL_ARITY
+            );
+        }
+    }
+
+    let slots: Vec<String> = (0..MAX_ICALL_ARITY).map(|i| format!("a{i}")).collect();
+    let _ = writeln!(out, "function _icall(fp, {}) {{", slots.join(", "));
+    for (i, (f, id)) in entries.iter().enumerate() {
+        let kw = if i == 0 { "if" } else { "else if" };
+        let target = format!("fn_{}", sanitize(&f.name));
+        let pass = slots[..f.parameters.len()].join(", ");
+        let _ = writeln!(out, "    {kw} (fp == {id}) return {target}({pass})");
+    }
+    let _ = writeln!(out, "    else {{");
+    let _ = writeln!(
+        out,
+        "        printf \"awkvm: indirect call to unknown function id %d\\n\", fp > \"/dev/stderr\""
+    );
+    let _ = writeln!(out, "        exit 1");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "}}");
+    Ok(())
+}
+
+fn emit_globals_init(
+    out: &mut String,
+    module: &Module,
+    fn_ids: &HashMap<String, i64>,
+) -> Result<()> {
     // gv.ty is the pointer type (`ptr` under opaque pointers); the storage
     // type comes from the initializer.
     let with_init: Vec<_> = module
@@ -140,7 +208,7 @@ fn emit_globals_init(out: &mut String, module: &Module) -> Result<()> {
         .iter()
         .filter_map(|gv| gv.initializer.as_ref().map(|i| (gv, i)))
         .collect();
-    if with_init.is_empty() {
+    if with_init.is_empty() && fn_ids.is_empty() {
         return Ok(());
     }
     let _ = writeln!(out, "BEGIN {{");
@@ -161,6 +229,17 @@ fn emit_globals_init(out: &mut String, module: &Module) -> Result<()> {
             &module.types,
             "    ",
         )?;
+    }
+    // Function pointer registry: a Constant::GlobalReference to a function
+    // emits as g_<name> just like a data global, but resolves to its int id.
+    let mut fns: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|f| fn_ids.get(&f.name).map(|id| (f.name.as_str(), *id)))
+        .collect();
+    fns.sort_by_key(|(_, id)| *id);
+    for (name, id) in fns {
+        let _ = writeln!(out, "    g_{} = {id}", sanitize(name));
     }
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
@@ -514,7 +593,7 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
             },
             _ => bail!("indirect call target is not a global reference"),
         },
-        Either::Right(_) => bail!("indirect calls are not implemented yet"),
+        Either::Right(op) => return emit_indirect_call(out, call, op, indent),
         Either::Left(_) => bail!("inline assembly is not supported"),
     };
 
@@ -533,6 +612,35 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
     match &call.dest {
         Some(dest) => {
             let _ = writeln!(out, "{indent}{} = {call_expr}", name_to_var(dest));
+        }
+        None => {
+            let _ = writeln!(out, "{indent}{call_expr}");
+        }
+    }
+    Ok(())
+}
+
+fn emit_indirect_call(
+    out: &mut String,
+    call: &llvm_ir::instruction::Call,
+    fp_op: &Operand,
+    indent: &str,
+) -> Result<()> {
+    let fp = operand_str(fp_op);
+    let args: Vec<String> = call.arguments.iter().map(|(op, _)| operand_str(op)).collect();
+    if args.len() > MAX_ICALL_ARITY {
+        bail!(
+            "indirect call has {} args; dispatcher only supports up to {}",
+            args.len(),
+            MAX_ICALL_ARITY
+        );
+    }
+    let mut all = vec![fp];
+    all.extend(args);
+    let call_expr = format!("_icall({})", all.join(", "));
+    match &call.dest {
+        Some(d) => {
+            let _ = writeln!(out, "{indent}{} = {call_expr}", name_to_var(d));
         }
         None => {
             let _ = writeln!(out, "{indent}{call_expr}");
