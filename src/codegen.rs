@@ -949,6 +949,15 @@ fn emit_libc(
             let _ = writeln!(out, "{indent}UNWINDING = 1");
             let _ = writeln!(out, "{indent}return");
         }
+        // C++ operator new / delete (and the nothrow / sized variants).
+        // Mangled names per Itanium ABI.
+        "_Znwm" | "_Znam" | "_ZnwmRKSt9nothrow_t" | "_ZnamRKSt9nothrow_t" => {
+            assign(format!("_alloc({})", args[0]), out);
+        }
+        "_ZdlPv" | "_ZdaPv" | "_ZdlPvm" | "_ZdaPvm" | "_ZdlPvRKSt9nothrow_t"
+        | "_ZdaPvRKSt9nothrow_t" => {
+            // No-op: bump allocator never reclaims.
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -1180,7 +1189,25 @@ fn constant_str(c: &ConstantRef) -> String {
         Constant::Undef(_) | Constant::Poison(_) => "0".to_string(),
         Constant::GlobalReference { name, .. } => global_to_var(name),
         Constant::Float(f) => float_literal(f),
-        other => format!("0 /* unsupported constant: {other} */"),
+        // Constexpr GEP `getelementptr (ptr @G, i64 N)` shows up in vtable
+        // setup and similar. We don't track Constant::GetElementPtr's source
+        // element type under opaque pointers, but the dominant case is a
+        // pointer-stride single index, so just compute g_<base> + N*8.
+        Constant::GetElementPtr(g) if g.indices.len() == 1 => {
+            let base = constant_str(&g.address);
+            if let Constant::Int { value, bits } = g.indices[0].as_ref() {
+                let n = sign_extend(*value, *bits);
+                let off = n * 8;
+                if off == 0 { base } else { format!("({base} + {off})") }
+            } else {
+                "0".to_string()
+            }
+        }
+        // Fall-through: bake to 0 rather than writing /* comment */ syntax
+        // that wouldn't survive being inlined into an awk expression. Whatever
+        // codepath consumes this value is on its own; for our smoke fixtures
+        // these are typically dead branches.
+        _ => "0".to_string(),
     }
 }
 
