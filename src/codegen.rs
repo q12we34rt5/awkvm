@@ -6,9 +6,11 @@ use either::Either;
 use llvm_ir::{
     Constant, ConstantRef, Function, Instruction, IntPredicate, Module, Name, Operand, Terminator,
     Type, TypeRef,
+    types::{NamedStructDef, Types},
 };
 
-const RUNTIME: &str = r#"function _ashr(a, n) {
+const RUNTIME: &str = r#"BEGIN { NEXT_ADDR = 1 }
+function _ashr(a, n) {
     return (a < 0 && a % (2 ^ n) != 0) ? int(a / (2 ^ n)) - 1 : int(a / (2 ^ n))
 }
 function _zext(a, w) {
@@ -17,6 +19,30 @@ function _zext(a, w) {
 function _trunc(a, w,    m) {
     m = and(a, (2 ^ w) - 1)
     return m >= (2 ^ (w - 1)) ? m - (2 ^ w) : m
+}
+function _alloc(size,    a) {
+    a = NEXT_ADDR
+    NEXT_ADDR += size
+    return a
+}
+# Little-endian load: read ceil(bits/8) bytes from MEM and sign-extend.
+# Undefined keys read as 0, so unwritten memory acts as zero-padded.
+function _load(addr, bits,    n, i, v, sign) {
+    n = int((bits + 7) / 8)
+    v = 0
+    for (i = 0; i < n; i++) {
+        v += MEM[addr + i] * (256 ^ i)
+    }
+    sign = 2 ^ (bits - 1)
+    return v >= sign ? v - 2 * sign : v
+}
+function _store(addr, val, bits,    n, i, u) {
+    n = int((bits + 7) / 8)
+    u = val < 0 ? val + 2 ^ bits : val
+    for (i = 0; i < n; i++) {
+        MEM[addr + i] = u % 256
+        u = int(u / 256)
+    }
 }
 "#;
 
@@ -34,12 +60,12 @@ pub fn emit(module: &Module) -> Result<String> {
     }
 
     for func in &module.functions {
-        emit_function(&mut out, func)?;
+        emit_function(&mut out, func, &module.types)?;
     }
     Ok(out)
 }
 
-fn emit_function(out: &mut String, func: &Function) -> Result<()> {
+fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()> {
     let params: Vec<String> = func.parameters.iter().map(|p| name_to_var(&p.name)).collect();
     let multi_block = func.basic_blocks.len() > 1;
 
@@ -68,11 +94,11 @@ fn emit_function(out: &mut String, func: &Function) -> Result<()> {
     let _ = writeln!(out, ") {{");
 
     if multi_block {
-        emit_multi_block(out, func)?;
+        emit_multi_block(out, func, types)?;
     } else {
         let bb = &func.basic_blocks[0];
         for instr in &bb.instrs {
-            emit_instruction(out, instr, "    ")?;
+            emit_instruction(out, instr, "    ", types)?;
         }
         emit_terminator(out, &bb.term, &bb.name, func, "    ")?;
     }
@@ -82,7 +108,7 @@ fn emit_function(out: &mut String, func: &Function) -> Result<()> {
     Ok(())
 }
 
-fn emit_multi_block(out: &mut String, func: &Function) -> Result<()> {
+fn emit_multi_block(out: &mut String, func: &Function, types: &Types) -> Result<()> {
     let entry = &func.basic_blocks[0];
     let _ = writeln!(out, "    block = \"{}\"", block_label(&entry.name));
     let _ = writeln!(out, "    while (1) {{");
@@ -90,7 +116,7 @@ fn emit_multi_block(out: &mut String, func: &Function) -> Result<()> {
         let kw = if i == 0 { "if" } else { "else if" };
         let _ = writeln!(out, "        {kw} (block == \"{}\") {{", block_label(&bb.name));
         for instr in &bb.instrs {
-            emit_instruction(out, instr, "            ")?;
+            emit_instruction(out, instr, "            ", types)?;
         }
         emit_terminator(out, &bb.term, &bb.name, func, "            ")?;
         let _ = writeln!(out, "        }}");
@@ -120,11 +146,22 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         ICmp(i) => Some(&i.dest),
         Phi(i) => Some(&i.dest),
         Call(i) => i.dest.as_ref(),
+        Alloca(i) => Some(&i.dest),
+        Load(i) => Some(&i.dest),
+        GetElementPtr(i) => Some(&i.dest),
+        BitCast(i) => Some(&i.dest),
+        IntToPtr(i) => Some(&i.dest),
+        PtrToInt(i) => Some(&i.dest),
         _ => None,
     }
 }
 
-fn emit_instruction(out: &mut String, instr: &Instruction, indent: &str) -> Result<()> {
+fn emit_instruction(
+    out: &mut String,
+    instr: &Instruction,
+    indent: &str,
+    types: &Types,
+) -> Result<()> {
     use Instruction::*;
     match instr {
         Add(i) => binop(out, indent, &i.dest, &i.operand0, "+", &i.operand1),
@@ -198,6 +235,70 @@ fn emit_instruction(out: &mut String, instr: &Instruction, indent: &str) -> Resu
         ICmp(i) => binop(out, indent, &i.dest, &i.operand0, icmp_op(i.predicate), &i.operand1),
         Phi(_) => Ok(()),
         Call(call) => emit_call(out, call, indent),
+        Alloca(a) => {
+            let elem_size = type_size_bytes(&a.allocated_type, types)?;
+            let dest = name_to_var(&a.dest);
+            let size_expr = match &a.num_elements {
+                Operand::ConstantOperand(c) => match c.as_ref() {
+                    Constant::Int { value, bits } => {
+                        let n = sign_extend(*value, *bits);
+                        format!("{}", elem_size as i64 * n)
+                    }
+                    _ => format!("{elem_size} * {}", operand_str(&a.num_elements)),
+                },
+                _ => format!("{elem_size} * {}", operand_str(&a.num_elements)),
+            };
+            let _ = writeln!(out, "{indent}{dest} = _alloc({size_expr})");
+            Ok(())
+        }
+        Load(l) => {
+            let bits = mem_bits(&l.loaded_ty)?;
+            let _ = writeln!(
+                out,
+                "{indent}{} = _load({}, {bits})",
+                name_to_var(&l.dest),
+                operand_str(&l.address)
+            );
+            Ok(())
+        }
+        Store(s) => {
+            let bits = operand_mem_bits(&s.value)?;
+            let _ = writeln!(
+                out,
+                "{indent}_store({}, {}, {bits})",
+                operand_str(&s.address),
+                operand_str(&s.value)
+            );
+            Ok(())
+        }
+        GetElementPtr(g) => emit_gep(out, g, indent, types),
+        BitCast(c) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = {}",
+                name_to_var(&c.dest),
+                operand_str(&c.operand)
+            );
+            Ok(())
+        }
+        IntToPtr(c) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = {}",
+                name_to_var(&c.dest),
+                operand_str(&c.operand)
+            );
+            Ok(())
+        }
+        PtrToInt(c) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = {}",
+                name_to_var(&c.dest),
+                operand_str(&c.operand)
+            );
+            Ok(())
+        }
         other => bail!("instruction not implemented: {other}"),
     }
 }
@@ -308,6 +409,8 @@ fn emit_intrinsic(
         "abs" if !args.is_empty() => {
             assign(format!("{a} < 0 ? -{a} : {a}", a = args[0]), out);
         }
+        // Pure markers for the optimizer; nothing to emit at runtime.
+        "lifetime" | "dbg" | "assume" | "experimental" => {}
         _ => bail!("intrinsic `{full_name}` is not implemented yet"),
     }
     Ok(())
@@ -442,6 +545,211 @@ fn type_bits(ty: &TypeRef) -> Result<u32> {
     match ty.as_ref() {
         Type::IntegerType { bits } => Ok(*bits),
         other => bail!("expected integer type, got {other}"),
+    }
+}
+
+// Bit width to use when loading/storing a value of this type. Pointers are
+// fixed at 64 bits (x86_64 model).
+fn mem_bits(ty: &TypeRef) -> Result<u32> {
+    match ty.as_ref() {
+        Type::IntegerType { bits } => Ok(*bits),
+        Type::PointerType { .. } => Ok(64),
+        other => bail!("load/store of type {other} not supported"),
+    }
+}
+
+fn operand_mem_bits(op: &Operand) -> Result<u32> {
+    match op {
+        Operand::LocalOperand { ty, .. } => mem_bits(ty),
+        Operand::ConstantOperand(c) => match c.as_ref() {
+            Constant::Int { bits, .. } => Ok(*bits),
+            Constant::Null(_) => Ok(64),
+            other => bail!("cannot determine store size for constant {other}"),
+        },
+        Operand::MetadataOperand => bail!("metadata operand has no size"),
+    }
+}
+
+fn type_size_bytes(ty: &TypeRef, types: &Types) -> Result<u64> {
+    match ty.as_ref() {
+        Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8),
+        Type::PointerType { .. } => Ok(8),
+        Type::ArrayType { element_type, num_elements } => {
+            let elem = type_size_bytes(element_type, types)?;
+            let align = type_align(element_type, types)?;
+            let stride = align_up(elem, align);
+            Ok(stride * (*num_elements as u64))
+        }
+        Type::StructType { element_types, is_packed } => {
+            Ok(struct_layout(element_types, *is_packed, types)?.size)
+        }
+        Type::NamedStructType { name } => match types.named_struct_def(name) {
+            Some(NamedStructDef::Defined(def)) => type_size_bytes(def, types),
+            _ => bail!("opaque or undefined struct: {name}"),
+        },
+        other => bail!("size of type {other} not supported"),
+    }
+}
+
+fn type_align(ty: &TypeRef, types: &Types) -> Result<u64> {
+    match ty.as_ref() {
+        Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8).map(|b| b.max(1)),
+        Type::PointerType { .. } => Ok(8),
+        Type::ArrayType { element_type, .. } => type_align(element_type, types),
+        Type::StructType { element_types, is_packed } => {
+            if *is_packed {
+                Ok(1)
+            } else {
+                let mut max = 1u64;
+                for el in element_types {
+                    let a = type_align(el, types)?;
+                    if a > max {
+                        max = a;
+                    }
+                }
+                Ok(max)
+            }
+        }
+        Type::NamedStructType { name } => match types.named_struct_def(name) {
+            Some(NamedStructDef::Defined(def)) => type_align(def, types),
+            _ => bail!("opaque or undefined struct: {name}"),
+        },
+        other => bail!("alignment of type {other} not supported"),
+    }
+}
+
+struct StructLayout {
+    size: u64,
+    offsets: Vec<u64>,
+}
+
+fn struct_layout(elements: &[TypeRef], packed: bool, types: &Types) -> Result<StructLayout> {
+    let mut offsets = Vec::with_capacity(elements.len());
+    let mut offset = 0u64;
+    let mut max_align = 1u64;
+    for el in elements {
+        let sz = type_size_bytes(el, types)?;
+        let al = if packed { 1 } else { type_align(el, types)? };
+        offset = align_up(offset, al);
+        offsets.push(offset);
+        offset += sz;
+        if al > max_align {
+            max_align = al;
+        }
+    }
+    let final_align = if packed { 1 } else { max_align };
+    Ok(StructLayout {
+        size: align_up(offset, final_align),
+        offsets,
+    })
+}
+
+fn align_up(x: u64, a: u64) -> u64 {
+    if a <= 1 { x } else { (x + a - 1) / a * a }
+}
+
+fn resolve_named(ty: TypeRef, types: &Types) -> Result<TypeRef> {
+    let mut cur = ty;
+    while let Type::NamedStructType { name } = cur.as_ref() {
+        match types.named_struct_def(name) {
+            Some(NamedStructDef::Defined(def)) => cur = def.clone(),
+            _ => bail!("opaque or undefined struct: {name}"),
+        }
+    }
+    Ok(cur)
+}
+
+fn emit_gep(
+    out: &mut String,
+    gep: &llvm_ir::instruction::GetElementPtr,
+    indent: &str,
+    types: &Types,
+) -> Result<()> {
+    let dest = name_to_var(&gep.dest);
+    let mut const_off: i64 = 0;
+    let mut runtime: Vec<(u64, String)> = Vec::new();
+
+    let mut current = resolve_named(gep.source_element_type.clone(), types)?;
+    let mut idxs = gep.indices.iter();
+
+    // First index strides over copies of source_element_type (treats base as
+    // a 1-element array of that type), but does not descend.
+    let first = idxs
+        .next()
+        .ok_or_else(|| anyhow!("GEP must have at least one index"))?;
+    let stride = type_size_bytes(&current, types)?;
+    accumulate_index(first, stride, &mut const_off, &mut runtime)?;
+
+    // Remaining indices descend into aggregates.
+    for idx in idxs {
+        current = resolve_named(current, types)?;
+        match current.as_ref() {
+            Type::ArrayType { element_type, .. } => {
+                let stride = type_size_bytes(element_type, types)?;
+                accumulate_index(idx, stride, &mut const_off, &mut runtime)?;
+                current = element_type.clone();
+            }
+            Type::StructType { element_types, is_packed } => {
+                let layout = struct_layout(element_types, *is_packed, types)?;
+                let i = const_index(idx)? as usize;
+                let off = *layout
+                    .offsets
+                    .get(i)
+                    .ok_or_else(|| anyhow!("struct index out of range"))?;
+                const_off += off as i64;
+                current = element_types[i].clone();
+            }
+            other => bail!("GEP descent into {other} not supported"),
+        }
+    }
+
+    let mut expr = operand_str(&gep.address);
+    if const_off > 0 {
+        expr = format!("{expr} + {const_off}");
+    } else if const_off < 0 {
+        expr = format!("{expr} - {}", -const_off);
+    }
+    for (stride, var) in runtime {
+        if stride == 1 {
+            expr = format!("{expr} + {var}");
+        } else {
+            expr = format!("{expr} + {stride} * {var}");
+        }
+    }
+    let _ = writeln!(out, "{indent}{dest} = {expr}");
+    Ok(())
+}
+
+fn accumulate_index(
+    op: &Operand,
+    stride: u64,
+    const_off: &mut i64,
+    runtime: &mut Vec<(u64, String)>,
+) -> Result<()> {
+    match op {
+        Operand::ConstantOperand(c) => match c.as_ref() {
+            Constant::Int { value, bits } => {
+                let v = sign_extend(*value, *bits);
+                *const_off += (stride as i64) * v;
+                Ok(())
+            }
+            other => bail!("non-integer constant GEP index: {other}"),
+        },
+        Operand::LocalOperand { name, .. } => {
+            runtime.push((stride, name_to_var(name)));
+            Ok(())
+        }
+        Operand::MetadataOperand => bail!("metadata operand as GEP index"),
+    }
+}
+
+fn const_index(op: &Operand) -> Result<i64> {
+    match op {
+        Operand::ConstantOperand(c) => match c.as_ref() {
+            Constant::Int { value, bits } => Ok(sign_extend(*value, *bits)),
+            other => bail!("struct GEP index must be a constant int, got {other}"),
+        },
+        _ => bail!("struct GEP index must be a constant int"),
     }
 }
 
