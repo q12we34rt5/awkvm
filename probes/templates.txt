@@ -45,3 +45,8 @@ ostream_voidptr => _ostream_voidptr(arg0, arg1)
 # stays implicit (anything not in the table defaults to stdout).
 ostream_cerr    := /dev/stderr
 ostream_clog    := /dev/stderr
+
+# cin >> int. arg1 is the IR `int*` destination; the helper parses one
+# whitespace-delimited token from cin's line buffer and stores into it.
+# `32` is the bit width passed to _store.
+istream_int     => _istream_int(arg0, arg1, 32)

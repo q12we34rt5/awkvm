@@ -12,9 +12,19 @@ _(empty — last item just landed)_
 
 ## Todo (next)
 
-- **[iostream]** `cin >> primitive` and `std::getline`. cin is a
-  similar probe story to cout but the token-buffering on the awk side
-  is non-trivial (~30 lines of `getline`-as-token-source helper).
+- **[iostream]** Extend cin: `>> double`, `>> std::string`,
+  `>> long` / unsigned variants. `int` is wired; the read-token
+  helper already does the awk-side work, each new overload is one
+  probe + one helper that calls `_istream_read_token` and converts.
+- **[iostream]** `std::getline(cin, str)`. Maps directly to gawk's
+  `getline x < "/dev/stdin"`; should be a thin wrapper over the
+  existing line-buffer state.
+- **[iostream]** istream input source via probe (cin global). Today
+  `_istream_skip_ws` hardcodes `"/dev/stdin"`; analogous to the
+  STREAM_GLOBALS path for cerr/clog, we'd add `istream_cin :=
+  /dev/stdin` and route through an `_ISTREAM_SRC` table populated
+  in emit_globals_init. Same blocker / unblocker as the rdbuf swap
+  story (E4 / E5).
 
 ## Todo (later)
 
@@ -49,7 +59,9 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ cerr / clog dispatcher driven by probe-discovered
+- _(this commit)_ `cin >> int`: line buffer + token reader on the awk
+  side; tests/examples gained an stdin-injection helper
+- `d1c511c` cerr / clog dispatcher driven by probe-discovered
   globals (`STREAM_GLOBALS` table); iostream.awk no longer hardcodes
   libc++'s mangled names
 - `e17a76a` codegen warns at compile time when user .ll has a

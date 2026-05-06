@@ -77,3 +77,70 @@ function _ostream_voidptr(stream, val,    d, u) {
     else         printf "0x%x", u > d
     return stream
 }
+
+# ============================================================
+# istream / cin
+# ============================================================
+#
+# C++ `cin >> x` is token-oriented (skip leading whitespace, read up
+# to the next whitespace, leave trailing whitespace for the next
+# read). gawk's `getline` is line-oriented, so we maintain a
+# per-stream line buffer + cursor and refill from "/dev/stdin" when
+# we run dry. cin is currently the only istream we recognize, so we
+# hardcode "/dev/stdin" as the source; sstream / fstream support
+# (E4 / E5) will need a streambuf-id table mirroring _OSTREAM_DEST.
+
+# Skip whitespace at the current cursor, refilling from stdin when
+# the buffer is exhausted. Returns 1 if a non-ws char is now under
+# the cursor, 0 if EOF.
+function _istream_skip_ws(stream,    buf, pos, line, c) {
+    while (1) {
+        buf = _ISTREAM_BUF[stream]
+        pos = _ISTREAM_POS[stream]
+        if (pos == 0) pos = 1   # awk substr is 1-indexed
+        while (pos > length(buf)) {
+            if ((getline line < "/dev/stdin") <= 0) {
+                _ISTREAM_EOF[stream] = 1
+                _ISTREAM_BUF[stream] = buf
+                _ISTREAM_POS[stream] = pos
+                return 0
+            }
+            buf = buf line "\n"
+        }
+        c = substr(buf, pos, 1)
+        if (c != " " && c != "\t" && c != "\n") {
+            _ISTREAM_BUF[stream] = buf
+            _ISTREAM_POS[stream] = pos
+            return 1
+        }
+        pos++
+        _ISTREAM_BUF[stream] = buf
+        _ISTREAM_POS[stream] = pos
+    }
+}
+
+# Read one whitespace-delimited token. Returns "" on EOF.
+function _istream_read_token(stream,    buf, pos, c, tok) {
+    if (!_istream_skip_ws(stream)) return ""
+    buf = _ISTREAM_BUF[stream]
+    pos = _ISTREAM_POS[stream]
+    tok = ""
+    while (pos <= length(buf)) {
+        c = substr(buf, pos, 1)
+        if (c == " " || c == "\t" || c == "\n") break
+        tok = tok c
+        pos++
+    }
+    _ISTREAM_POS[stream] = pos
+    return tok
+}
+
+# `cin >> int_var` — read one token, awk's string→number coercion
+# parses the leading numeric prefix (matching strtol's behavior),
+# then store at the destination address. `bits` distinguishes int /
+# long / etc. so the same helper can serve both.
+function _istream_int(stream, dest, bits,    tok) {
+    tok = _istream_read_token(stream)
+    _store(dest, tok + 0, bits)
+    return stream
+}

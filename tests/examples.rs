@@ -9,6 +9,7 @@
 // Requires clang/clang++ from LLVM 19 and gawk in PATH. The clang path is
 // resolved through LLVM_SYS_191_PREFIX (matching .cargo/config.toml).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -43,6 +44,10 @@ struct Outcome {
 }
 
 fn run_fixture(stem: &str, ext: &str, args: &[&str]) -> Outcome {
+    run_fixture_with_stdin(stem, ext, args, b"")
+}
+
+fn run_fixture_with_stdin(stem: &str, ext: &str, args: &[&str], stdin: &[u8]) -> Outcome {
     let src = manifest_dir().join("examples").join(format!("{stem}.{ext}"));
     assert!(src.exists(), "fixture missing: {}", src.display());
 
@@ -52,7 +57,7 @@ fn run_fixture(stem: &str, ext: &str, args: &[&str]) -> Outcome {
 
     compile_to_ll(&src, ext == "cpp", &ll);
     awkvm_emit(&ll, &awk);
-    run_gawk(&awk, args)
+    run_gawk(&awk, args, stdin)
 }
 
 fn compile_to_ll(src: &Path, cpp: bool, out: &Path) {
@@ -95,7 +100,7 @@ fn awkvm_emit(ll: &Path, awk: &Path) {
     );
 }
 
-fn run_gawk(awk: &Path, args: &[&str]) -> Outcome {
+fn run_gawk(awk: &Path, args: &[&str], stdin: &[u8]) -> Outcome {
     let mut cmd = Command::new("gawk");
     cmd.env("LC_ALL", "C");
     cmd.arg("-f").arg(awk);
@@ -105,10 +110,19 @@ fn run_gawk(awk: &Path, args: &[&str]) -> Outcome {
             cmd.arg(a);
         }
     }
-    cmd.stdin(Stdio::null());
-    let output = cmd
-        .output()
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
         .unwrap_or_else(|e| panic!("failed to spawn gawk (is it installed?): {e}"));
+    child
+        .stdin
+        .as_mut()
+        .expect("gawk stdin")
+        .write_all(stdin)
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait gawk");
     Outcome {
         exit: output.status.code().unwrap_or(-1),
         stdout: output.stdout,
@@ -160,6 +174,29 @@ fn check_exit(stem: &str, ext: &str, args: &[&str], expect_exit: i32) {
         out.exit, expect_exit,
         "[{stem}] exit code: got {}, expected {}",
         out.exit, expect_exit
+    );
+}
+
+fn check_with_stdin(
+    stem: &str,
+    ext: &str,
+    args: &[&str],
+    stdin: &[u8],
+    expect_exit: i32,
+    expect_stdout: &[u8],
+) {
+    let out = run_fixture_with_stdin(stem, ext, args, stdin);
+    assert_eq!(
+        out.exit, expect_exit,
+        "[{stem}] exit code: got {}, expected {}",
+        out.exit, expect_exit
+    );
+    assert_eq!(
+        out.stdout.as_slice(),
+        expect_stdout,
+        "[{stem}] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expect_stdout),
     );
 }
 
@@ -271,6 +308,11 @@ fn cout_cerr() {
         b"out: 1\n",
         b"err: 2\n",
     );
+}
+
+#[test]
+fn cin_int() {
+    check_with_stdin("cin_int", "cpp", &[], b"3 5\n", 0, b"8\n");
 }
 
 #[test]
