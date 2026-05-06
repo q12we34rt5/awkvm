@@ -23,8 +23,6 @@ _(empty — last item just landed)_
   in the BEGIN block. Linux / libstdc++ then becomes a toolchain-pin
   issue, not a code change. ~half-day to one day; needs Linux to
   actually validate.
-- **[iostream]** Probe more ostream overloads: `long`, `unsigned`,
-  `bool`, `void*`.
 - **[iostream]** `cin >> primitive` and `std::getline`. cin is a
   similar probe story to cout but the token-buffering on the awk side
   is non-trivial (~30 lines of `getline`-as-token-source helper).
@@ -62,8 +60,10 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ cout_char regression fixture rules out a future
-  collision between an `_ostream_char` probe and `_ostream_cstr`
+- _(this commit)_ ostream long / unsigned int / unsigned long / bool /
+  void\* overloads + cout_overloads fixture; `Constant::IntToPtr` /
+  `PtrToInt` / `BitCast` constexprs now pass through `constant_str`
+- `48ba99d` cout_char regression fixture (char-via-cstr probe)
 - `c1a8068` Track ROADMAP / LIMITATIONS / TODO under git
 - `abc8936` Route cerr / clog to /dev/stderr; tests assert on stderr
 - `93daa6f` cout << double; cout_mixed fixture

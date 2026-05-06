@@ -6,6 +6,24 @@
 # or just `expr` depending on whether the IR call has a dest. Helper
 # functions referenced here (e.g. _ostream_int) live in runtime/iostream.awk.
 
-ostream_int    => _ostream_int(arg0, arg1)
-ostream_cstr   => _ostream_cstr(arg0, arg1, arg2)
-ostream_double => _ostream_double(arg0, arg1)
+ostream_int     => _ostream_int(arg0, arg1)
+ostream_cstr    => _ostream_cstr(arg0, arg1, arg2)
+ostream_double  => _ostream_double(arg0, arg1)
+
+# `long` prints like signed int (printf "%d" works as-is).
+ostream_long    => _ostream_int(arg0, arg1)
+
+# `bool` would too, except awkvm's signed integer model represents `i1
+# true` as -1 (high bit set, sign-extended). Normalize to 0 / 1 with
+# `!= 0` before printing.
+ostream_bool    => _ostream_int(arg0, arg1 != 0)
+
+# unsigned needs zext from signed model. The "32" / "64" literals are
+# the source-type bit width and bake into the awk template directly
+# (no arg substitution); the helper does `val + 2^bits` if val is
+# negative in the signed view.
+ostream_uint    => _ostream_unsigned(arg0, arg1, 32)
+ostream_ulong   => _ostream_unsigned(arg0, arg1, 64)
+
+# void* is zext-then-hex with the libc++ "0x" prefix.
+ostream_voidptr => _ostream_voidptr(arg0, arg1)

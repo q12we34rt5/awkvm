@@ -65,6 +65,13 @@ pub(super) fn constant_str(c: &ConstantRef) -> String {
                 "0".to_string()
             }
         }
+        // Constexpr int<->ptr / ptr<->int / bitcast are no-ops in our
+        // model: pointers ARE byte addresses, so the integer value
+        // passes straight through. `(void*)0x42` shows up here as
+        // `inttoptr (i64 66 to ptr)` and we want the literal 66.
+        Constant::IntToPtr(c) => constant_str(&c.operand),
+        Constant::PtrToInt(c) => constant_str(&c.operand),
+        Constant::BitCast(c) => constant_str(&c.operand),
         // Fall-through: bake to 0 rather than writing /* comment */ syntax
         // that wouldn't survive being inlined into an awk expression. Whatever
         // codepath consumes this value is on its own; for our smoke fixtures

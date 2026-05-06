@@ -28,6 +28,29 @@ PROBE void awkvm_probe_ostream_double(std::ostream& os, double d) {
     os << d;
 }
 
+PROBE void awkvm_probe_ostream_long(std::ostream& os, long n) {
+    os << n;
+}
+
+// Itanium signatures: `j` is unsigned int, `m` is unsigned long. Two
+// separate overloads, two separate probes — but they share the same
+// awk runtime helper (`_ostream_unsigned`) parameterized by bit width.
+PROBE void awkvm_probe_ostream_uint(std::ostream& os, unsigned n) {
+    os << n;
+}
+
+PROBE void awkvm_probe_ostream_ulong(std::ostream& os, unsigned long n) {
+    os << n;
+}
+
+PROBE void awkvm_probe_ostream_bool(std::ostream& os, bool b) {
+    os << b;
+}
+
+PROBE void awkvm_probe_ostream_voidptr(std::ostream& os, const void* p) {
+    os << p;
+}
+
 // Two ostream operations we deliberately *don't* probe yet:
 //
 // * `os << c` for `char c`: libc++ lowers this to the SAME

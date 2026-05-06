@@ -251,6 +251,17 @@ fn cout_mixed() {
 }
 
 #[test]
+fn cout_overloads() {
+    check(
+        "cout_overloads",
+        "cpp",
+        &[],
+        0,
+        b"1234567890 4000000000 12345 1 0x42\n",
+    );
+}
+
+#[test]
 fn cout_cerr() {
     check_streams(
         "cout_cerr",

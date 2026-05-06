@@ -56,3 +56,27 @@ function _ostream_double(stream, val,    d) {
     else         printf "%g", val > d
     return stream
 }
+
+# Unsigned integer print: zext from awkvm's signed integer model
+# (val < 0 means the high bit was set) before formatting. `bits`
+# distinguishes uint (32) from ulong (64). For ulong > 2^53 awk's
+# double precision rounds — documented in LIMITATIONS.md.
+function _ostream_unsigned(stream, val, bits,    d, u) {
+    u = (val < 0) ? val + 2 ^ bits : val
+    d = _ostream_dest(stream)
+    if (d == "") printf "%d", u
+    else         printf "%d", u > d
+    return stream
+}
+
+# `cout << ptr` formats as "0x" + lower-case hex with no width prefix
+# (libc++ default; libstdc++ may differ). Pointer values in our model
+# are byte addresses, all non-negative under normal use; the zext
+# guards against pointer-as-i64 with the high bit set.
+function _ostream_voidptr(stream, val,    d, u) {
+    u = (val < 0) ? val + 2 ^ 64 : val
+    d = _ostream_dest(stream)
+    if (d == "") printf "0x%x", u
+    else         printf "0x%x", u > d
+    return stream
+}
