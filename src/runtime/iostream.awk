@@ -24,3 +24,11 @@ function _ostream_cstr(stream, addr, len,    i) {
     }
     return stream
 }
+
+# C++ default formatting for double: 6 significant digits. gawk's %g
+# matches that out of the box; precision will need a setprecision()
+# manipulator path later.
+function _ostream_double(stream, val) {
+    printf "%g", val
+    return stream
+}

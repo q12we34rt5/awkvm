@@ -6,5 +6,6 @@
 # or just `expr` depending on whether the IR call has a dest. Helper
 # functions referenced here (e.g. _ostream_int) live in runtime/iostream.awk.
 
-ostream_int  => _ostream_int(arg0, arg1)
-ostream_cstr => _ostream_cstr(arg0, arg1, arg2)
+ostream_int    => _ostream_int(arg0, arg1)
+ostream_cstr   => _ostream_cstr(arg0, arg1, arg2)
+ostream_double => _ostream_double(arg0, arg1)

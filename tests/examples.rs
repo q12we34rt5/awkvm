@@ -208,6 +208,11 @@ fn cout_int() {
 }
 
 #[test]
+fn cout_mixed() {
+    check("cout_mixed", "cpp", &[], 0, b"x = 5, pi = 3.14\n");
+}
+
+#[test]
 fn stdany() {
     check("stdany", "cpp", &[], 42, b"");
 }

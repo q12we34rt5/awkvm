@@ -23,3 +23,20 @@ PROBE void awkvm_probe_ostream_int(std::ostream& os, int n) {
 PROBE void awkvm_probe_ostream_cstr(std::ostream& os, const char* s) {
     os << s;
 }
+
+PROBE void awkvm_probe_ostream_double(std::ostream& os, double d) {
+    os << d;
+}
+
+// Two ostream operations we deliberately *don't* probe yet:
+//
+// * `os << c` for `char c`: libc++ lowers this to the SAME
+//   __put_character_sequence(os, &c, 1) call as a string literal, so
+//   the existing ostream_cstr binding handles char-via-byte already.
+//   A separate probe would just collide on the mangled name.
+//
+// * `os << std::endl`: clang inlines endl into ~6 calls including a
+//   virtual `widen('\n')` dispatched through the ctype facet's vtable.
+//   Making that work requires modeling the libc++ locale machinery
+//   end-to-end (or stubbing widen to identity), which is its own
+//   project. Until then, write `"\n"` instead of `std::endl`.
