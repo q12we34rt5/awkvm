@@ -12,10 +12,10 @@ _(empty — last item just landed)_
 
 ## Todo (next)
 
-- **[iostream]** Extend cin: `>> double`, `>> std::string`,
-  `>> long` / unsigned variants. `int` is wired; the read-token
-  helper already does the awk-side work, each new overload is one
-  probe + one helper that calls `_istream_read_token` and converts.
+- **[iostream]** Extend cin further: `>> std::string`, `>> unsigned`
+  variants. The numeric tier (int / long / double) is wired; string
+  needs libc++-layout-aware writes (similar story to `cout << string`
+  but on the read side).
 - **[iostream]** `std::getline(cin, str)`. Maps directly to gawk's
   `getline x < "/dev/stdin"`; should be a thin wrapper over the
   existing line-buffer state.
@@ -59,7 +59,9 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ `cin >> int`: line buffer + token reader on the awk
+- _(this commit)_ `cin >> long` / `cin >> double` extensions on top
+  of the cin token reader
+- `42cc55b` `cin >> int`: line buffer + token reader on the awk
   side; tests/examples gained an stdin-injection helper
 - `d1c511c` cerr / clog dispatcher driven by probe-discovered
   globals (`STREAM_GLOBALS` table); iostream.awk no longer hardcodes

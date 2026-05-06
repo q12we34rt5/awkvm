@@ -144,3 +144,12 @@ function _istream_int(stream, dest, bits,    tok) {
     _store(dest, tok + 0, bits)
     return stream
 }
+
+# `cin >> double_var` — same token-read; awk's coercion handles the
+# decimal / exponent forms strtod does. Storage is IEEE 754 via the
+# fp.awk pack helpers.
+function _istream_double(stream, dest,    tok) {
+    tok = _istream_read_token(stream)
+    _store_f64(dest, tok + 0)
+    return stream
+}

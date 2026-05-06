@@ -11,3 +11,11 @@
 PROBE void awkvm_probe_istream_int(std::istream& is, int& n) {
     is >> n;
 }
+
+PROBE void awkvm_probe_istream_long(std::istream& is, long& l) {
+    is >> l;
+}
+
+PROBE void awkvm_probe_istream_double(std::istream& is, double& d) {
+    is >> d;
+}

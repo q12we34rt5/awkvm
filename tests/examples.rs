@@ -316,6 +316,21 @@ fn cin_int() {
 }
 
 #[test]
+fn cin_mixed() {
+    // 1234567890 fits comfortably in i64 (< 2^53), so awk's number
+    // representation reads it back exactly. 3.14 round-trips with
+    // %g formatting.
+    check_with_stdin(
+        "cin_mixed",
+        "cpp",
+        &[],
+        b"1234567890 3.14\n",
+        0,
+        b"1234567890 3.14\n",
+    );
+}
+
+#[test]
 fn stdany() {
     check("stdany", "cpp", &[], 42, b"");
 }

@@ -46,7 +46,12 @@ ostream_voidptr => _ostream_voidptr(arg0, arg1)
 ostream_cerr    := /dev/stderr
 ostream_clog    := /dev/stderr
 
-# cin >> int. arg1 is the IR `int*` destination; the helper parses one
-# whitespace-delimited token from cin's line buffer and stores into it.
-# `32` is the bit width passed to _store.
+# cin >> int / long. arg1 is the IR destination pointer; the helper
+# reads one whitespace-delimited token from the istream's line buffer
+# and stores into it via `_store(addr, val, bits)`.
 istream_int     => _istream_int(arg0, arg1, 32)
+istream_long    => _istream_int(arg0, arg1, 64)
+
+# cin >> double. Same token-read flow, but the destination is an
+# 8-byte IEEE 754 slot, so the helper goes through `_store_f64`.
+istream_double  => _istream_double(arg0, arg1)
