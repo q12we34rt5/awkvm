@@ -10,17 +10,24 @@ an escape hatch — so a hand-built bash runtime is unnecessary and a
 single self-contained `.awk` file is enough to host most "ordinary"
 C programs.
 
-> Work in progress. Integer arithmetic, control flow, bitwise ops,
-> width conversions, direct + indirect calls, a byte-addressed memory
-> model (alloca / load / store / GEP, with type punning), globals
-> with constant initializers, a basic libc bridge (printf / puts /
-> putchar / malloc / free / exit / memcpy / memset / memmove / strlen),
-> floats (single + double, IEEE 754 load/store), first-class aggregates,
-> C++ exceptions with single-inheritance RTTI matching, and small
-> C++ stdlib smoke tests (`std::min`, `std::vector<int>`,
-> `std::string`, `std::vector<std::string>`) work today. iostream is
-> out of reach because the implementation lives in libc++ dylib, not
-> the IR.
+> Work in progress. Integer / float arithmetic, control flow, bitwise
+> ops, width conversions, direct + indirect calls, a byte-addressed
+> memory model (alloca / load / store / GEP, with type punning),
+> globals with constant initializers, a libc bridge (printf / puts /
+> putchar / malloc / free / exit / memcpy / memset / memmove / strlen
+> / atoi / atof / ...), floats (single + double, IEEE 754 load/store),
+> first-class aggregates, C++ exceptions with single-inheritance RTTI
+> matching, and C++ stdlib smoke tests (`std::min`, `std::vector<int>`,
+> `std::string`, `std::vector<std::string>`, `std::any`) work today.
+>
+> **iostream is now usable for primitive types** via a probe-based
+> binding (`probes/`): `cout` / `cerr` / `clog` with `int` / `long` /
+> `unsigned` / `bool` / `void*` / `double` / `char` / `const char*`
+> work; `cin >>` reads `int` / `long` / `double` with token-aware
+> line buffering. `std::endl` / `ofstream` / `ifstream` / `sstream`
+> / `iomanip` aren't wired yet — see [LIMITATIONS.md](LIMITATIONS.md)
+> for the current gap list and [ROADMAP.md](ROADMAP.md) for what
+> comes next.
 
 ## Build
 

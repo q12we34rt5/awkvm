@@ -185,6 +185,18 @@ fn check_with_stdin(
     expect_exit: i32,
     expect_stdout: &[u8],
 ) {
+    check_full(stem, ext, args, stdin, expect_exit, expect_stdout, b"");
+}
+
+fn check_full(
+    stem: &str,
+    ext: &str,
+    args: &[&str],
+    stdin: &[u8],
+    expect_exit: i32,
+    expect_stdout: &[u8],
+    expect_stderr: &[u8],
+) {
     let out = run_fixture_with_stdin(stem, ext, args, stdin);
     assert_eq!(
         out.exit, expect_exit,
@@ -197,6 +209,13 @@ fn check_with_stdin(
         "[{stem}] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(expect_stdout),
+    );
+    assert_eq!(
+        out.stderr.as_slice(),
+        expect_stderr,
+        "[{stem}] stderr mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(expect_stderr),
     );
 }
 
@@ -327,6 +346,37 @@ fn cin_mixed() {
         b"1234567890 3.14\n",
         0,
         b"1234567890 3.14\n",
+    );
+}
+
+#[test]
+fn stats_cli() {
+    // Demo fixture: read N then N ints, output stats. Exercises every
+    // recognized iostream primitive (cin >> int, cout << with int /
+    // long / double / cstr, cerr for error path).
+    check_with_stdin(
+        "stats_cli",
+        "cpp",
+        &[],
+        b"5\n10 -3 7 0 8\n",
+        0,
+        b"n=5 sum=22 min=-3 max=10 mean=4.4\n",
+    );
+}
+
+#[test]
+fn stats_cli_error() {
+    // Negative N → cerr message, exit 1. Demonstrates the cerr
+    // dispatch routes to /dev/stderr (verified by separate stderr
+    // assertion below).
+    check_full(
+        "stats_cli",
+        "cpp",
+        &[],
+        b"-1\n",
+        1,
+        b"",
+        b"error: n must be positive\n",
     );
 }
 

@@ -53,7 +53,8 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ cin source via probe + `_ISTREAM_SRC` table;
+- _(this commit)_ v0.1.0 release: README + CHANGELOG + stats_cli demo
+- `2649a00` cin source via probe + `_ISTREAM_SRC` table;
   STREAM_GLOBALS metadata now uses `dest=` / `src=` prefix so
   ostream and istream globals share one machinery
 - `39c2811` `cin >> long` / `cin >> double` extensions on top
