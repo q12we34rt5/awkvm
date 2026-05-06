@@ -30,6 +30,7 @@ fn llvm_bin(name: &str) -> PathBuf {
 struct Outcome {
     exit: i32,
     stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 fn run_fixture(stem: &str, ext: &str, args: &[&str]) -> Outcome {
@@ -102,10 +103,26 @@ fn run_gawk(awk: &Path, args: &[&str]) -> Outcome {
     Outcome {
         exit: output.status.code().unwrap_or(-1),
         stdout: output.stdout,
+        stderr: output.stderr,
     }
 }
 
+// Default check: assert exit + stdout, and demand stderr is empty.
+// Anything intentionally writing to stderr (e.g. cerr fixtures) uses
+// check_streams below; asserting empty by default catches stray gawk
+// warnings or accidental cerr/clog leaks.
 fn check(stem: &str, ext: &str, args: &[&str], expect_exit: i32, expect_stdout: &[u8]) {
+    check_streams(stem, ext, args, expect_exit, expect_stdout, b"");
+}
+
+fn check_streams(
+    stem: &str,
+    ext: &str,
+    args: &[&str],
+    expect_exit: i32,
+    expect_stdout: &[u8],
+    expect_stderr: &[u8],
+) {
     let out = run_fixture(stem, ext, args);
     assert_eq!(
         out.exit, expect_exit,
@@ -118,6 +135,13 @@ fn check(stem: &str, ext: &str, args: &[&str], expect_exit: i32, expect_stdout: 
         "[{stem}] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(expect_stdout),
+    );
+    assert_eq!(
+        out.stderr.as_slice(),
+        expect_stderr,
+        "[{stem}] stderr mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(expect_stderr),
     );
 }
 
@@ -210,6 +234,18 @@ fn cout_int() {
 #[test]
 fn cout_mixed() {
     check("cout_mixed", "cpp", &[], 0, b"x = 5, pi = 3.14\n");
+}
+
+#[test]
+fn cout_cerr() {
+    check_streams(
+        "cout_cerr",
+        "cpp",
+        &[],
+        0,
+        b"out: 1\n",
+        b"err: 2\n",
+    );
 }
 
 #[test]
