@@ -10,7 +10,60 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 _(empty — last item just landed)_
 
-## Todo (next)
+## Next major: v0.2.0 — C ↔ awk FFI
+
+A coherent release theme: make awkvm bidirectional. C code can drop
+to raw awk where useful, and awk scripts can call into compiled C.
+Each item below is independently small; together they form the
+v0.2.0 story.
+
+- **[ffi]** Inline awk via `__asm__("AWKVM:...")`. ROADMAP "Near-term"
+  has the design. ~half-day. Today `emit_call` bails on
+  `Either::Left(InlineAssembly)`; make it inspect the asm string for
+  an `AWKVM:` prefix and emit the rest verbatim with `%N`
+  placeholders substituted from the operands. Unlocks `system()`,
+  `match(/regex/)`, gawk's `mktime`, bidirectional `|&`, etc. — the
+  entire gawk surface — without us adding a matching libc / runtime
+  stub for every one.
+
+- **[ffi]** Whole-function awk bodies via
+  `__attribute__((annotate("awkvm_body:...")))`. ~half-day. Same
+  plumbing as the next item; scan `@llvm.global.annotations`,
+  build a `name → awk source` map, short-circuit `emit_function`
+  for matched names. Useful when "this whole function is awk
+  plumbing with a C type signature".
+
+- **[ffi]** `AWK_EXPORT` — awk-callable C library mode (~2-3 days,
+  conceived 2026-05-07). `__attribute__((annotate("awkvm_export")))`
+  marks a C function as exported. awkvm:
+  1. Reads the annotation table, names the exports.
+  2. Type-checks each export's signature; bails at codegen time on
+     non-primitive args / returns. Initial scope: `int` / `long` /
+     `unsigned` / `double` / `bool` / `char` / `void`. `const char*`
+     and struct support deferred to a follow-up wrapper layer.
+  3. Adds a `--library` mode that skips the
+     `BEGIN { exit fn_main() }` line.
+  4. Emits the user's chosen function name (no `fn_` prefix) so
+     awk callers can `print sum_squares(10)` directly.
+
+  Caller pattern: `gawk -f lib.awk -f script.awk`, where `lib.awk`
+  is awkvm's output and `script.awk` calls the exported names.
+  Note: clang rejects `extern "awk" {}` (verified — "unknown
+  linkage language"), so we go via `annotate` instead.
+
+- **[ffi]** `awkvm --link helpers.awk` flag. ~half-day. Concatenate
+  a separate `.awk` file into the output, defining functions C-side
+  declares as `extern`. Different shape from inline awk: no
+  annotation in C source, just a real `.awk` file with proper
+  editor / linter / formatter support. Fits "200 lines of awk
+  helpers should live in their own file" pattern.
+
+Logical sequence: inline awk first (simplest, exercises the
+`__asm__` path), then AWK_EXPORT (annotation infra carries forward
+to the body-annotation item), then `awkvm_body` (cheap once
+annotations work) and `--link` (independent — can slot anywhere).
+
+## Todo (next, post-v0.2.0)
 
 - **[iostream]** Extend cin further: `>> std::string`, `>> unsigned`
   variants. The numeric tier (int / long / double) is wired; string
@@ -42,7 +95,6 @@ _(empty — last item just landed)_
 - **[exceptions]** `__vmi_class_type_info` (multi/virtual inheritance).
 - **[docs]** README "Limitations" section, mining from
   `LIMITATIONS.md` once stable.
-- **[docs]** CHANGELOG.md once we cut a release.
 
 ## Probably won't do
 
@@ -53,7 +105,10 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ v0.1.0 release: README + CHANGELOG + stats_cli demo
+- `c2ce31e` README refresh: quick example, toolchain warning,
+  doc links to ROADMAP / LIMITATIONS / CHANGELOG
+- `84428d8` v0.1.0 release: README + CHANGELOG + stats_cli demo +
+  `v0.1.0` git tag
 - `2649a00` cin source via probe + `_ISTREAM_SRC` table;
   STREAM_GLOBALS metadata now uses `dest=` / `src=` prefix so
   ostream and istream globals share one machinery
