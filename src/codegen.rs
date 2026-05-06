@@ -25,8 +25,9 @@ pub fn emit(module: &Module) -> Result<String> {
     let _ = writeln!(out, "{RUNTIME}");
 
     let fn_ids = build_fn_ids(module);
+    let mut cx = LayoutCx::new(&module.types);
 
-    emit_globals_init(&mut out, module, &fn_ids)?;
+    emit_globals_init(&mut out, module, &fn_ids, &mut cx)?;
 
     if let Some(main_fn) = module.functions.iter().find(|f| f.name == "main") {
         match main_fn.parameters.len() {
@@ -48,7 +49,7 @@ pub fn emit(module: &Module) -> Result<String> {
     }
 
     for func in &module.functions {
-        emit_function(&mut out, func, &module.types)?;
+        emit_function(&mut out, func, &mut cx)?;
     }
 
     // Stubs for `declare`-only functions (libc++ internals, etc.). Most are
@@ -135,6 +136,7 @@ fn emit_globals_init(
     out: &mut String,
     module: &Module,
     fn_ids: &HashMap<String, i64>,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     // gv.ty is the pointer type (`ptr` under opaque pointers); the storage
     // type comes from the initializer.
@@ -159,7 +161,7 @@ fn emit_globals_init(
     // any global address (forward refs are common with .str pools).
     for (gv, init) in &with_init {
         let storage_ty = init.get_type(&module.types);
-        let size = type_size_bytes(&storage_ty, &module.types)?;
+        let size = cx.size(&storage_ty)?;
         let _ = writeln!(out, "    {} = _alloc({size})", global_to_var(&gv.name));
     }
     for gv in &externs {
@@ -186,7 +188,7 @@ fn emit_globals_init(
             &global_to_var(&gv.name),
             init,
             &storage_ty,
-            &module.types,
+            cx,
             "    ",
         )?;
     }
@@ -225,7 +227,7 @@ fn emit_const_init(
     addr: &str,
     c: &ConstantRef,
     ty: &TypeRef,
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
     indent: &str,
 ) -> Result<()> {
     let sub_addr = |off: u64| -> String {
@@ -246,22 +248,22 @@ fn emit_const_init(
         // MEM defaults to 0, so zero-init is a no-op.
         Constant::AggregateZero(_) | Constant::Undef(_) | Constant::Poison(_) => {}
         Constant::Array { element_type, elements } => {
-            let elem_size = type_size_bytes(element_type, types)?;
-            let elem_align = type_align(element_type, types)?;
+            let elem_size = cx.size(element_type)?;
+            let elem_align = cx.align(element_type)?;
             let stride = align_up(elem_size, elem_align);
             for (i, el) in elements.iter().enumerate() {
-                emit_const_init(out, &sub_addr(i as u64 * stride), el, element_type, types, indent)?;
+                emit_const_init(out, &sub_addr(i as u64 * stride), el, element_type, cx, indent)?;
             }
         }
         Constant::Struct { values, is_packed, .. } => {
-            let resolved = resolve_named(ty.clone(), types)?;
+            let resolved = resolve_named(ty.clone(), cx.types)?;
             let elem_types = match resolved.as_ref() {
                 Type::StructType { element_types, .. } => element_types.clone(),
                 other => bail!("struct initializer for non-struct type: {other}"),
             };
-            let layout = struct_layout(&elem_types, *is_packed, types)?;
+            let layout = cx.struct_layout(&elem_types, *is_packed)?;
             for (i, val) in values.iter().enumerate() {
-                emit_const_init(out, &sub_addr(layout.offsets[i]), val, &elem_types[i], types, indent)?;
+                emit_const_init(out, &sub_addr(layout.offsets[i]), val, &elem_types[i], cx, indent)?;
             }
         }
         Constant::Float(f) => match ty.as_ref() {
@@ -292,7 +294,7 @@ fn emit_const_init(
     Ok(())
 }
 
-fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()> {
+fn emit_function(out: &mut String, func: &Function, cx: &mut LayoutCx<'_>) -> Result<()> {
     // External declarations (printf, malloc, libc++ internals, ...) have no
     // body. Most are intercepted at the call site by emit_libc. For the rest,
     // emit a no-op stub so a stray direct call doesn't crash gawk at runtime
@@ -347,11 +349,11 @@ fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()>
     let _ = writeln!(out, ") {{");
 
     if multi_block {
-        emit_multi_block(out, func, types)?;
+        emit_multi_block(out, func, cx)?;
     } else {
         let bb = &func.basic_blocks[0];
         for instr in &bb.instrs {
-            emit_instruction(out, instr, "    ", types)?;
+            emit_instruction(out, instr, "    ", cx)?;
         }
         emit_terminator(out, &bb.term, &bb.name, func, "    ")?;
     }
@@ -361,7 +363,7 @@ fn emit_function(out: &mut String, func: &Function, types: &Types) -> Result<()>
     Ok(())
 }
 
-fn emit_multi_block(out: &mut String, func: &Function, types: &Types) -> Result<()> {
+fn emit_multi_block(out: &mut String, func: &Function, cx: &mut LayoutCx<'_>) -> Result<()> {
     let entry = &func.basic_blocks[0];
     let _ = writeln!(out, "    block = \"{}\"", block_label(&entry.name));
     let _ = writeln!(out, "    while (1) {{");
@@ -369,7 +371,7 @@ fn emit_multi_block(out: &mut String, func: &Function, types: &Types) -> Result<
         let kw = if i == 0 { "if" } else { "else if" };
         let _ = writeln!(out, "        {kw} (block == \"{}\") {{", block_label(&bb.name));
         for instr in &bb.instrs {
-            emit_instruction(out, instr, "            ", types)?;
+            emit_instruction(out, instr, "            ", cx)?;
         }
         emit_terminator(out, &bb.term, &bb.name, func, "            ")?;
         let _ = writeln!(out, "        }}");
@@ -430,7 +432,7 @@ fn emit_instruction(
     out: &mut String,
     instr: &Instruction,
     indent: &str,
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     use Instruction::*;
     match instr {
@@ -506,7 +508,7 @@ fn emit_instruction(
         Phi(_) => Ok(()),
         Call(call) => emit_call(out, call, indent),
         Alloca(a) => {
-            let elem_size = type_size_bytes(&a.allocated_type, types)?;
+            let elem_size = cx.size(&a.allocated_type)?;
             let dest = name_to_var(&a.dest);
             let size_expr = match &a.num_elements {
                 Operand::ConstantOperand(c) => match c.as_ref() {
@@ -529,12 +531,12 @@ fn emit_instruction(
         Store(s) => {
             let addr = operand_str(&s.address);
             let val = operand_str(&s.value);
-            let val_ty = s.value.get_type(types);
+            let val_ty = s.value.get_type(cx.types);
             emit_store_at(out, indent, &addr, &val, &val_ty)
         }
-        ExtractValue(ev) => emit_extractvalue(out, ev, indent, types),
-        InsertValue(iv) => emit_insertvalue(out, iv, indent, types),
-        AtomicRMW(a) => emit_atomicrmw(out, a, indent, types),
+        ExtractValue(ev) => emit_extractvalue(out, ev, indent, cx),
+        InsertValue(iv) => emit_insertvalue(out, iv, indent, cx),
+        AtomicRMW(a) => emit_atomicrmw(out, a, indent, cx.types),
         Freeze(f) => {
             // Identity for non-poison/undef inputs (the only case we model).
             let _ = writeln!(
@@ -550,18 +552,18 @@ fn emit_instruction(
             // state set by __cxa_throw / Resume. Reaching landingpad means
             // we're handling, so clear UNWINDING.
             let dest = name_to_var(&lp.dest);
-            let size = type_size_bytes(&lp.result_type, types)?;
+            let size = cx.size(&lp.result_type)?;
             let _ = writeln!(out, "{indent}{dest} = _alloc({size})");
             let _ = writeln!(out, "{indent}_store({dest}, EXC_OBJ, 64)");
             let _ = writeln!(out, "{indent}_store({dest} + 8, EXC_TYPE_ID, 32)");
             let _ = writeln!(out, "{indent}UNWINDING = 0");
             Ok(())
         }
-        GetElementPtr(g) => emit_gep(out, g, indent, types),
+        GetElementPtr(g) => emit_gep(out, g, indent, cx),
         BitCast(c) => {
             let dest = name_to_var(&c.dest);
             let val = operand_str(&c.operand);
-            let src_ty = c.operand.get_type(types);
+            let src_ty = c.operand.get_type(cx.types);
             let src_is_fp = matches!(src_ty.as_ref(), Type::FPType(_));
             let dst_is_fp = matches!(c.to_type.as_ref(), Type::FPType(_));
             // Same kind on both sides: pure no-op (awk has one number type;
@@ -1285,82 +1287,121 @@ fn mem_bits(ty: &TypeRef) -> Result<u32> {
     }
 }
 
-fn type_size_bytes(ty: &TypeRef, types: &Types) -> Result<u64> {
-    match ty.as_ref() {
-        Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8),
-        Type::PointerType { .. } => Ok(8),
-        Type::FPType(FPType::Single) => Ok(4),
-        Type::FPType(FPType::Double) => Ok(8),
-        Type::ArrayType { element_type, num_elements } => {
-            let elem = type_size_bytes(element_type, types)?;
-            let align = type_align(element_type, types)?;
-            let stride = align_up(elem, align);
-            Ok(stride * (*num_elements as u64))
-        }
-        Type::StructType { element_types, is_packed } => {
-            Ok(struct_layout(element_types, *is_packed, types)?.size)
-        }
-        Type::NamedStructType { name } => match types.named_struct_def(name) {
-            Some(NamedStructDef::Defined(def)) => type_size_bytes(def, types),
-            _ => bail!("opaque or undefined struct: {name}"),
-        },
-        other => bail!("size of type {other} not supported"),
-    }
-}
-
-fn type_align(ty: &TypeRef, types: &Types) -> Result<u64> {
-    match ty.as_ref() {
-        Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8).map(|b| b.max(1)),
-        Type::PointerType { .. } => Ok(8),
-        Type::FPType(FPType::Single) => Ok(4),
-        Type::FPType(FPType::Double) => Ok(8),
-        Type::ArrayType { element_type, .. } => type_align(element_type, types),
-        Type::StructType { element_types, is_packed } => {
-            if *is_packed {
-                Ok(1)
-            } else {
-                let mut max = 1u64;
-                for el in element_types {
-                    let a = type_align(el, types)?;
-                    if a > max {
-                        max = a;
-                    }
-                }
-                Ok(max)
-            }
-        }
-        Type::NamedStructType { name } => match types.named_struct_def(name) {
-            Some(NamedStructDef::Defined(def)) => type_align(def, types),
-            _ => bail!("opaque or undefined struct: {name}"),
-        },
-        other => bail!("alignment of type {other} not supported"),
-    }
-}
-
 struct StructLayout {
     size: u64,
     offsets: Vec<u64>,
 }
 
-fn struct_layout(elements: &[TypeRef], packed: bool, types: &Types) -> Result<StructLayout> {
-    let mut offsets = Vec::with_capacity(elements.len());
-    let mut offset = 0u64;
-    let mut max_align = 1u64;
-    for el in elements {
-        let sz = type_size_bytes(el, types)?;
-        let al = if packed { 1 } else { type_align(el, types)? };
-        offset = align_up(offset, al);
-        offsets.push(offset);
-        offset += sz;
-        if al > max_align {
-            max_align = al;
+// Type layout queries with memoization on named structs.
+//
+// Layout is purely a function of the type, so a single LayoutCx per emit()
+// run is sound. The cache key is `NamedStructType.name` because that is
+// what callers re-query repeatedly (once per field access into the same
+// type). Non-named structs and arrays are cheap to recompute and skipped
+// to keep the cache from growing without bound.
+struct LayoutCx<'a> {
+    types: &'a Types,
+    sizes: HashMap<String, u64>,
+    aligns: HashMap<String, u64>,
+}
+
+impl<'a> LayoutCx<'a> {
+    fn new(types: &'a Types) -> Self {
+        Self {
+            types,
+            sizes: HashMap::new(),
+            aligns: HashMap::new(),
         }
     }
-    let final_align = if packed { 1 } else { max_align };
-    Ok(StructLayout {
-        size: align_up(offset, final_align),
-        offsets,
-    })
+
+    fn size(&mut self, ty: &TypeRef) -> Result<u64> {
+        match ty.as_ref() {
+            Type::IntegerType { bits } => Ok(((*bits as u64) + 7) / 8),
+            Type::PointerType { .. } => Ok(8),
+            Type::FPType(FPType::Single) => Ok(4),
+            Type::FPType(FPType::Double) => Ok(8),
+            Type::ArrayType { element_type, num_elements } => {
+                let elem = self.size(element_type)?;
+                let align = self.align(element_type)?;
+                let stride = align_up(elem, align);
+                Ok(stride * (*num_elements as u64))
+            }
+            Type::StructType { element_types, is_packed } => {
+                Ok(self.struct_layout(element_types, *is_packed)?.size)
+            }
+            Type::NamedStructType { name } => {
+                if let Some(&s) = self.sizes.get(name) {
+                    return Ok(s);
+                }
+                let def = match self.types.named_struct_def(name) {
+                    Some(NamedStructDef::Defined(d)) => d.clone(),
+                    _ => bail!("opaque or undefined struct: {name}"),
+                };
+                let s = self.size(&def)?;
+                self.sizes.insert(name.clone(), s);
+                Ok(s)
+            }
+            other => bail!("size of type {other} not supported"),
+        }
+    }
+
+    fn align(&mut self, ty: &TypeRef) -> Result<u64> {
+        match ty.as_ref() {
+            Type::IntegerType { bits } => Ok((((*bits as u64) + 7) / 8).max(1)),
+            Type::PointerType { .. } => Ok(8),
+            Type::FPType(FPType::Single) => Ok(4),
+            Type::FPType(FPType::Double) => Ok(8),
+            Type::ArrayType { element_type, .. } => self.align(element_type),
+            Type::StructType { element_types, is_packed } => {
+                if *is_packed {
+                    Ok(1)
+                } else {
+                    let mut max = 1u64;
+                    for el in element_types {
+                        let a = self.align(el)?;
+                        if a > max {
+                            max = a;
+                        }
+                    }
+                    Ok(max)
+                }
+            }
+            Type::NamedStructType { name } => {
+                if let Some(&a) = self.aligns.get(name) {
+                    return Ok(a);
+                }
+                let def = match self.types.named_struct_def(name) {
+                    Some(NamedStructDef::Defined(d)) => d.clone(),
+                    _ => bail!("opaque or undefined struct: {name}"),
+                };
+                let a = self.align(&def)?;
+                self.aligns.insert(name.clone(), a);
+                Ok(a)
+            }
+            other => bail!("alignment of type {other} not supported"),
+        }
+    }
+
+    fn struct_layout(&mut self, elements: &[TypeRef], packed: bool) -> Result<StructLayout> {
+        let mut offsets = Vec::with_capacity(elements.len());
+        let mut offset = 0u64;
+        let mut max_align = 1u64;
+        for el in elements {
+            let sz = self.size(el)?;
+            let al = if packed { 1 } else { self.align(el)? };
+            offset = align_up(offset, al);
+            offsets.push(offset);
+            offset += sz;
+            if al > max_align {
+                max_align = al;
+            }
+        }
+        let final_align = if packed { 1 } else { max_align };
+        Ok(StructLayout {
+            size: align_up(offset, final_align),
+            offsets,
+        })
+    }
 }
 
 fn align_up(x: u64, a: u64) -> u64 {
@@ -1390,23 +1431,22 @@ fn is_undef_or_zero(op: &Operand) -> bool {
 fn aggregate_walk(
     base_ty: &TypeRef,
     indices: &[u32],
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<(u64, TypeRef)> {
-    let mut current = resolve_named(base_ty.clone(), types)?;
+    let mut current = resolve_named(base_ty.clone(), cx.types)?;
     let mut offset = 0u64;
     for &idx in indices {
-        current = resolve_named(current, types)?;
+        current = resolve_named(current, cx.types)?;
         match current.as_ref() {
             Type::ArrayType { element_type, .. } => {
-                let stride = align_up(
-                    type_size_bytes(element_type, types)?,
-                    type_align(element_type, types)?,
-                );
+                let stride = align_up(cx.size(element_type)?, cx.align(element_type)?);
                 offset += stride * idx as u64;
                 current = element_type.clone();
             }
             Type::StructType { element_types, is_packed } => {
-                let layout = struct_layout(element_types, *is_packed, types)?;
+                let element_types = element_types.clone();
+                let is_packed = *is_packed;
+                let layout = cx.struct_layout(&element_types, is_packed)?;
                 let off = *layout
                     .offsets
                     .get(idx as usize)
@@ -1465,15 +1505,15 @@ fn emit_extractvalue(
     out: &mut String,
     ev: &llvm_ir::instruction::ExtractValue,
     indent: &str,
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
-    let agg_ty = ev.aggregate.get_type(types);
+    let agg_ty = ev.aggregate.get_type(cx.types);
     let dest = name_to_var(&ev.dest);
     let src = operand_str(&ev.aggregate);
-    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &ev.indices, types)?;
+    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &ev.indices, cx)?;
     let field = if offset == 0 { src } else { format!("{src} + {offset}") };
     if is_aggregate(&leaf_ty) {
-        let leaf_size = type_size_bytes(&leaf_ty, types)?;
+        let leaf_size = cx.size(&leaf_ty)?;
         let _ = writeln!(out, "{indent}{dest} = _alloc({leaf_size})");
         let _ = writeln!(out, "{indent}_memcpy({dest}, {field}, {leaf_size})");
     } else {
@@ -1530,10 +1570,10 @@ fn emit_insertvalue(
     out: &mut String,
     iv: &llvm_ir::instruction::InsertValue,
     indent: &str,
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
-    let agg_ty = iv.aggregate.get_type(types);
-    let size = type_size_bytes(&agg_ty, types)?;
+    let agg_ty = iv.aggregate.get_type(cx.types);
+    let size = cx.size(&agg_ty)?;
     let dest = name_to_var(&iv.dest);
     let _ = writeln!(out, "{indent}{dest} = _alloc({size})");
     // Skip the memcpy when the source is undef/poison/zero — MEM auto-zeros
@@ -1542,13 +1582,13 @@ fn emit_insertvalue(
         let src = operand_str(&iv.aggregate);
         let _ = writeln!(out, "{indent}_memcpy({dest}, {src}, {size})");
     }
-    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &iv.indices, types)?;
+    let (offset, leaf_ty) = aggregate_walk(&agg_ty, &iv.indices, cx)?;
     let field = if offset == 0 { dest.clone() } else { format!("{dest} + {offset}") };
     let val = operand_str(&iv.element);
-    let elem_ty = iv.element.get_type(types);
+    let elem_ty = iv.element.get_type(cx.types);
     if is_aggregate(&elem_ty) {
         if !is_undef_or_zero(&iv.element) {
-            let elem_size = type_size_bytes(&elem_ty, types)?;
+            let elem_size = cx.size(&elem_ty)?;
             let _ = writeln!(out, "{indent}_memcpy({field}, {val}, {elem_size})");
         }
     } else {
@@ -1575,13 +1615,13 @@ fn emit_gep(
     out: &mut String,
     gep: &llvm_ir::instruction::GetElementPtr,
     indent: &str,
-    types: &Types,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     let dest = name_to_var(&gep.dest);
     let mut const_off: i64 = 0;
     let mut runtime: Vec<(u64, String)> = Vec::new();
 
-    let mut current = resolve_named(gep.source_element_type.clone(), types)?;
+    let mut current = resolve_named(gep.source_element_type.clone(), cx.types)?;
     let mut idxs = gep.indices.iter();
 
     // First index strides over copies of source_element_type (treats base as
@@ -1589,20 +1629,23 @@ fn emit_gep(
     let first = idxs
         .next()
         .ok_or_else(|| anyhow!("GEP must have at least one index"))?;
-    let stride = type_size_bytes(&current, types)?;
+    let stride = cx.size(&current)?;
     accumulate_index(first, stride, &mut const_off, &mut runtime)?;
 
     // Remaining indices descend into aggregates.
     for idx in idxs {
-        current = resolve_named(current, types)?;
+        current = resolve_named(current, cx.types)?;
         match current.as_ref() {
             Type::ArrayType { element_type, .. } => {
-                let stride = type_size_bytes(element_type, types)?;
+                let element_type = element_type.clone();
+                let stride = cx.size(&element_type)?;
                 accumulate_index(idx, stride, &mut const_off, &mut runtime)?;
-                current = element_type.clone();
+                current = element_type;
             }
             Type::StructType { element_types, is_packed } => {
-                let layout = struct_layout(element_types, *is_packed, types)?;
+                let element_types = element_types.clone();
+                let is_packed = *is_packed;
+                let layout = cx.struct_layout(&element_types, is_packed)?;
                 let i = const_index(idx)? as usize;
                 let off = *layout
                     .offsets
