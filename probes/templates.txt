@@ -1,10 +1,23 @@
-# probe_id => awk expression template
+# probe_id <sigil> <body>
 #
-# The probe_id matches the awkvm_probe_<id> function in probes/src/*.cpp.
-# Templates are awk expressions; codegen substitutes arg0 / arg1 / ... with
-# operand strings at the call site, and wraps the result as `dest = expr`
-# or just `expr` depending on whether the IR call has a dest. Helper
-# functions referenced here (e.g. _ostream_int) live in runtime/iostream.awk.
+# Two sigils, two destinations:
+#
+#   =>  call-site template. Body is an awk expression with arg0 / arg1 /
+#       ... placeholders that codegen substitutes from the IR call's
+#       operands at each call site that resolves to the captured
+#       mangled name. Result wraps as `dest = expr` or `expr` based on
+#       whether the IR call has a dest. Helpers referenced here (e.g.
+#       _ostream_int) live in runtime/iostream.awk.
+#
+#   :=  global-symbol metadata. Body is consumed verbatim by codegen
+#       at emit_globals_init time. For ostream globals the body is the
+#       gawk output target (empty for stdout, /dev/stderr for stderr,
+#       etc.) that gets registered in the awk runtime's _OSTREAM_DEST
+#       table for the global's allocated address.
+#
+# The probe_id (the suffix on `awkvm_probe_<id>` in probes/src/*.cpp)
+# must match for build.rs to pair the captured mangled name with the
+# template body.
 
 ostream_int     => _ostream_int(arg0, arg1)
 ostream_cstr    => _ostream_cstr(arg0, arg1, arg2)
@@ -27,3 +40,8 @@ ostream_ulong   => _ostream_unsigned(arg0, arg1, 64)
 
 # void* is zext-then-hex with the libc++ "0x" prefix.
 ostream_voidptr => _ostream_voidptr(arg0, arg1)
+
+# ostream globals → output target. cerr / clog go to /dev/stderr; cout
+# stays implicit (anything not in the table defaults to stdout).
+ostream_cerr    := /dev/stderr
+ostream_clog    := /dev/stderr

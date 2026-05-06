@@ -9,24 +9,21 @@
 
 # Resolve the gawk output target for an ostream instance.
 #
-# Today this just identity-checks against the std globals: cerr / clog
-# go to /dev/stderr, everything else (notably cout, plus any unrecognized
-# ostream subclass) defaults to stdout.
+# _OSTREAM_DEST is populated at codegen time in emit_globals_init's
+# BEGIN block: for every external global whose mangled name matches
+# an entry in build.rs's STREAM_GLOBALS table (cerr / clog today), a
+# `_OSTREAM_DEST[g__<sanitized>] = "<target>"` line is emitted. cout
+# and any other unrecognized stream are absent from the table and
+# default to "" (gawk's stdout) via the fallback below.
 #
-# Future shape: when sstream / fstream / rdbuf swap land (E4 / E5), this
-# becomes a two-level lookup — `ostream addr → streambuf id → target` —
-# with the second table populated by ofstream / stringstream constructor
-# probes. Keeping every _ostream_<type> routed through this one helper
-# so that change is a single-file edit.
-#
-# Caveat: the cerr / clog symbol names hardcoded below are libc++'s
-# Itanium mangling. Under libstdc++ they'd be `_ZSt4cerr` / `_ZSt4clog`,
-# and dispatch would silently fall through to stdout. Cross-toolchain
-# robustness is on the same TODO as the streambuf indirection.
+# Future shape: when sstream / fstream / rdbuf swap land (E4 / E5),
+# this becomes a two-level lookup — `ostream addr → streambuf id →
+# target` — with the second table populated by ofstream /
+# stringstream constructor probes. Keeping every _ostream_<type>
+# routed through this one helper so that change is a single-file
+# edit.
 function _ostream_dest(stream) {
-    if (stream == g__ZNSt3__14cerrE) return "/dev/stderr"
-    if (stream == g__ZNSt3__14clogE) return "/dev/stderr"
-    return ""
+    return (stream in _OSTREAM_DEST) ? _OSTREAM_DEST[stream] : ""
 }
 
 function _ostream_int(stream, val,    d) {

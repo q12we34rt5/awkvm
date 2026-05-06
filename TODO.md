@@ -12,17 +12,6 @@ _(empty — last item just landed)_
 
 ## Todo (next)
 
-- **[iostream]** Capture cerr / clog mangled global names via probes
-  so `_ostream_dest` in iostream.awk stops hardcoding libc++'s
-  `_ZNSt3__14cerrE` / `_ZNSt3__14clogE`. Plan: generalize the probe
-  map to allow "global symbol → metadata" alongside "call site →
-  template" (separate sigil in `templates.txt`, e.g. `->` vs `=>`);
-  build.rs emits a `STREAM_GLOBAL_KIND` table; `emit_globals_init`
-  iterates `module.global_vars`, matches mangled names against the
-  table, and emits `_OSTREAM_DEST[g__<sanitized>] = "/dev/stderr"`
-  in the BEGIN block. Linux / libstdc++ then becomes a toolchain-pin
-  issue, not a code change. ~half-day to one day; needs Linux to
-  actually validate.
 - **[iostream]** `cin >> primitive` and `std::getline`. cin is a
   similar probe story to cout but the token-buffering on the awk side
   is non-trivial (~30 lines of `getline`-as-token-source helper).
@@ -60,7 +49,10 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ codegen warns at compile time when user .ll has a
+- _(this commit)_ cerr / clog dispatcher driven by probe-discovered
+  globals (`STREAM_GLOBALS` table); iostream.awk no longer hardcodes
+  libc++'s mangled names
+- `e17a76a` codegen warns at compile time when user .ll has a
   probe-targeted libc++ symbol whose ABI tag doesn't match PROBE_MAP
 - `72e3384` ostream long / unsigned int / unsigned long / bool /
   void\* overloads + cout_overloads fixture; `Constant::IntToPtr` /

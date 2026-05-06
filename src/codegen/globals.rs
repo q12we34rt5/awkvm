@@ -6,6 +6,7 @@ use llvm_ir::{Constant, ConstantRef, Module, Name, Type, TypeRef, types::{FPType
 
 use super::MAX_ICALL_ARITY;
 use super::names::{float_literal, global_to_var, sanitize};
+use super::probe_map::STREAM_GLOBALS;
 use super::types::{LayoutCx, align_up, resolve_named, sign_extend};
 
 pub(super) fn emit_icall_dispatcher(
@@ -113,6 +114,21 @@ pub(super) fn emit_globals_init(
             cx,
             "    ",
         )?;
+    }
+    // ostream output-target registry. STREAM_GLOBALS maps recognized
+    // libc++ global names (cerr, clog, ...) to gawk output targets;
+    // _ostream_dest reads this table at every helper call to route
+    // output to the right place. Cout / unrecognized streams default
+    // to stdout via the absent-key path.
+    for gv in &module.global_vars {
+        let Name::Name(name) = &gv.name else { continue };
+        if let Some((_, target)) = STREAM_GLOBALS.iter().find(|(m, _)| *m == name.as_str()) {
+            let _ = writeln!(
+                out,
+                "    _OSTREAM_DEST[{}] = \"{target}\"",
+                global_to_var(&gv.name)
+            );
+        }
     }
     // C++ typeinfo parent registry: lets _typeid_for walk the inheritance
     // chain at catch time. We only handle Itanium __si_class_type_info

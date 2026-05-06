@@ -51,6 +51,22 @@ PROBE void awkvm_probe_ostream_voidptr(std::ostream& os, const void* p) {
     os << p;
 }
 
+// Global-symbol probes. Different shape from the call probes above:
+// the body's first @_Z* reference is a global *load* (or ret with a
+// global address), not a call. build.rs uses the same parser to
+// extract the mangled name; templates.txt routes these probe_ids
+// through the `:=` sigil so they end up in STREAM_GLOBALS instead of
+// PROBE_MAP. Codegen consults STREAM_GLOBALS in emit_globals_init to
+// register the stream's output target in the awk runtime's
+// _OSTREAM_DEST table.
+PROBE std::ostream* awkvm_probe_ostream_cerr() {
+    return &std::cerr;
+}
+
+PROBE std::ostream* awkvm_probe_ostream_clog() {
+    return &std::clog;
+}
+
 // Two ostream operations we deliberately *don't* probe yet:
 //
 // * `os << c` for `char c`: libc++ lowers this to the SAME
