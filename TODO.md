@@ -19,12 +19,6 @@ _(empty — last item just landed)_
 - **[iostream]** `std::getline(cin, str)`. Maps directly to gawk's
   `getline x < "/dev/stdin"`; should be a thin wrapper over the
   existing line-buffer state.
-- **[iostream]** istream input source via probe (cin global). Today
-  `_istream_skip_ws` hardcodes `"/dev/stdin"`; analogous to the
-  STREAM_GLOBALS path for cerr/clog, we'd add `istream_cin :=
-  /dev/stdin` and route through an `_ISTREAM_SRC` table populated
-  in emit_globals_init. Same blocker / unblocker as the rdbuf swap
-  story (E4 / E5).
 
 ## Todo (later)
 
@@ -59,7 +53,10 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
-- _(this commit)_ `cin >> long` / `cin >> double` extensions on top
+- _(this commit)_ cin source via probe + `_ISTREAM_SRC` table;
+  STREAM_GLOBALS metadata now uses `dest=` / `src=` prefix so
+  ostream and istream globals share one machinery
+- `39c2811` `cin >> long` / `cin >> double` extensions on top
   of the cin token reader
 - `42cc55b` `cin >> int`: line buffer + token reader on the awk
   side; tests/examples gained an stdin-injection helper

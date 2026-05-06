@@ -85,21 +85,26 @@ function _ostream_voidptr(stream, val,    d, u) {
 # C++ `cin >> x` is token-oriented (skip leading whitespace, read up
 # to the next whitespace, leave trailing whitespace for the next
 # read). gawk's `getline` is line-oriented, so we maintain a
-# per-stream line buffer + cursor and refill from "/dev/stdin" when
-# we run dry. cin is currently the only istream we recognize, so we
-# hardcode "/dev/stdin" as the source; sstream / fstream support
-# (E4 / E5) will need a streambuf-id table mirroring _OSTREAM_DEST.
+# per-stream line buffer + cursor (`_ISTREAM_BUF` / `_ISTREAM_POS`)
+# and refill from the source registered in `_ISTREAM_SRC[stream]`.
+# That table is populated by emit_globals_init for cin (today) and
+# will be extended for fstream / istringstream in E4 / E5.
 
-# Skip whitespace at the current cursor, refilling from stdin when
-# the buffer is exhausted. Returns 1 if a non-ws char is now under
-# the cursor, 0 if EOF.
-function _istream_skip_ws(stream,    buf, pos, line, c) {
+# Skip whitespace at the current cursor, refilling from the stream's
+# source when the buffer is exhausted. Returns 1 if a non-ws char is
+# now under the cursor, 0 if EOF / unknown stream.
+function _istream_skip_ws(stream,    buf, pos, line, c, src) {
+    src = _ISTREAM_SRC[stream]
+    if (src == "") {
+        _ISTREAM_EOF[stream] = 1
+        return 0
+    }
     while (1) {
         buf = _ISTREAM_BUF[stream]
         pos = _ISTREAM_POS[stream]
         if (pos == 0) pos = 1   # awk substr is 1-indexed
         while (pos > length(buf)) {
-            if ((getline line < "/dev/stdin") <= 0) {
+            if ((getline line < src) <= 0) {
                 _ISTREAM_EOF[stream] = 1
                 _ISTREAM_BUF[stream] = buf
                 _ISTREAM_POS[stream] = pos

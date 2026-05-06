@@ -115,18 +115,28 @@ pub(super) fn emit_globals_init(
             "    ",
         )?;
     }
-    // ostream output-target registry. STREAM_GLOBALS maps recognized
-    // libc++ global names (cerr, clog, ...) to gawk output targets;
-    // _ostream_dest reads this table at every helper call to route
-    // output to the right place. Cout / unrecognized streams default
-    // to stdout via the absent-key path.
+    // Stream registry. STREAM_GLOBALS maps recognized libc++ global
+    // names (cerr, clog, cin, ...) to `<table>=<value>` metadata that
+    // selects which awk runtime table the address gets registered in:
+    //   dest=...  → _OSTREAM_DEST  (consulted by _ostream_dest)
+    //   src=...   → _ISTREAM_SRC   (consulted by _istream_skip_ws)
+    // cout is intentionally absent (defaults to stdout via absent-key
+    // path); same for any unrecognized ostream subclass.
     for gv in &module.global_vars {
         let Name::Name(name) = &gv.name else { continue };
-        if let Some((_, target)) = STREAM_GLOBALS.iter().find(|(m, _)| *m == name.as_str()) {
-            let _ = writeln!(
-                out,
-                "    _OSTREAM_DEST[{}] = \"{target}\"",
-                global_to_var(&gv.name)
+        let Some((_, meta)) = STREAM_GLOBALS.iter().find(|(m, _)| *m == name.as_str())
+        else {
+            continue;
+        };
+        let var = global_to_var(&gv.name);
+        if let Some(target) = meta.strip_prefix("dest=") {
+            let _ = writeln!(out, "    _OSTREAM_DEST[{var}] = \"{target}\"");
+        } else if let Some(source) = meta.strip_prefix("src=") {
+            let _ = writeln!(out, "    _ISTREAM_SRC[{var}] = \"{source}\"");
+        } else {
+            bail!(
+                "STREAM_GLOBALS metadata `{meta}` for `{name}` must start with \
+                 `dest=` or `src=`"
             );
         }
     }
