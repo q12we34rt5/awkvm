@@ -14,6 +14,17 @@ _(empty — last item just landed)_
 
 - **[iostream]** `cout << char` regression fixture — verify it flows
   through the cstr probe and rule out future probe-collision regressions.
+- **[iostream]** Capture cerr / clog mangled global names via probes
+  so `_ostream_dest` in iostream.awk stops hardcoding libc++'s
+  `_ZNSt3__14cerrE` / `_ZNSt3__14clogE`. Plan: generalize the probe
+  map to allow "global symbol → metadata" alongside "call site →
+  template" (separate sigil in `templates.txt`, e.g. `->` vs `=>`);
+  build.rs emits a `STREAM_GLOBAL_KIND` table; `emit_globals_init`
+  iterates `module.global_vars`, matches mangled names against the
+  table, and emits `_OSTREAM_DEST[g__<sanitized>] = "/dev/stderr"`
+  in the BEGIN block. Linux / libstdc++ then becomes a toolchain-pin
+  issue, not a code change. ~half-day to one day; needs Linux to
+  actually validate.
 - **[iostream]** Probe more ostream overloads: `long`, `unsigned`,
   `bool`, `void*`.
 - **[iostream]** `cin >> primitive` and `std::getline`. cin is a
