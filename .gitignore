@@ -2,4 +2,4 @@
 *.bc
 *.ll
 /ROADMAP.md
-/tests/
+/local/
