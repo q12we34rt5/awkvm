@@ -6,6 +6,7 @@ use llvm_ir::{Constant, Function, Name, Operand, Terminator};
 
 use super::MAX_ICALL_ARITY;
 use super::names::{block_label, constant_str, name_to_var, operand_str, sanitize};
+use super::probe_map::PROBE_MAP;
 
 pub(super) fn emit_call(
     out: &mut String,
@@ -36,6 +37,15 @@ pub(super) fn emit_call(
     // own definition, when shadowing).
     if target_name == "printf" {
         emit_printf(out, &args, call.dest.as_ref(), indent);
+        return Ok(());
+    }
+
+    // probe map: mangled libc++ symbols recognized by build.rs get rewritten
+    // to a precomputed awk template, with arg0..argN substituted by operand
+    // strings. Recognized helpers (currently iostream operators) don't throw,
+    // so we skip the UNWINDING check that follows a normal call.
+    if let Some(template) = probe_template(&target_name) {
+        emit_probe(out, template, &args, call.dest.as_ref(), indent);
         return Ok(());
     }
 
@@ -85,6 +95,34 @@ fn emit_indirect_call(
     }
     let _ = writeln!(out, "{indent}if (UNWINDING) return");
     Ok(())
+}
+
+fn probe_template(name: &str) -> Option<&'static str> {
+    PROBE_MAP
+        .iter()
+        .find_map(|(m, t)| if *m == name { Some(*t) } else { None })
+}
+
+fn emit_probe(
+    out: &mut String,
+    template: &str,
+    args: &[String],
+    dest: Option<&Name>,
+    indent: &str,
+) {
+    // Descending index so "arg10" is substituted before "arg1" etc.
+    let mut expr = template.to_string();
+    for (i, arg) in args.iter().enumerate().rev() {
+        expr = expr.replace(&format!("arg{i}"), arg);
+    }
+    match dest {
+        Some(d) => {
+            let _ = writeln!(out, "{indent}{} = {expr}", name_to_var(d));
+        }
+        None => {
+            let _ = writeln!(out, "{indent}{expr}");
+        }
+    }
 }
 
 fn emit_printf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &str) {

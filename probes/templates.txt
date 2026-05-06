@@ -1,0 +1,9 @@
+# probe_id => awk expression template
+#
+# The probe_id matches the awkvm_probe_<id> function in probes/src/*.cpp.
+# Templates are awk expressions; codegen substitutes arg0 / arg1 / ... with
+# operand strings at the call site, and wraps the result as `dest = expr`
+# or just `expr` depending on whether the IR call has a dest. Helper
+# functions referenced here (e.g. _ostream_int) live in runtime/iostream.awk.
+
+ostream_int => _ostream_int(arg0, arg1)

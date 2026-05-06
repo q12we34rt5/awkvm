@@ -11,11 +11,13 @@ mod func;
 mod globals;
 mod mem;
 mod names;
+mod probe_map;
 mod types;
 
 const MAX_ICALL_ARITY: usize = 8;
 
 use names::{func_to_var, name_to_var};
+use probe_map::PROBE_MAP;
 use types::LayoutCx;
 
 pub fn emit(module: &Module) -> Result<String> {
@@ -65,13 +67,17 @@ pub fn emit(module: &Module) -> Result<String> {
         .collect();
     let helpers = parse_libc_helpers(LIBC);
     let helper_names: HashSet<&str> = helpers.iter().map(|(n, _)| n.as_str()).collect();
+    let probe_names: HashSet<&str> = PROBE_MAP.iter().map(|(m, _)| *m).collect();
 
     // Stubs for `declare`-only functions: any libc / Itanium symbol the
-    // program references but doesn't define. Skip those covered by the
-    // helpers we're about to emit, otherwise gawk would see two definitions
-    // of fn_<name> and refuse to parse.
+    // program references but doesn't define. Skip those covered by helpers
+    // (which are about to be emitted as fn_<name>) or by the probe map
+    // (whose call sites have been rewritten in-line, so fn_<name> is dead
+    // code we'd rather not emit at all).
     for decl in &module.func_declarations {
-        if helper_names.contains(decl.name.as_str()) {
+        if helper_names.contains(decl.name.as_str())
+            || probe_names.contains(decl.name.as_str())
+        {
             continue;
         }
         let params: Vec<String> = decl

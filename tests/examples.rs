@@ -203,6 +203,11 @@ fn cppio() {
 }
 
 #[test]
+fn cout_int() {
+    check("cout_int", "cpp", &[], 0, b"42");
+}
+
+#[test]
 fn stdany() {
     check("stdany", "cpp", &[], 42, b"");
 }
