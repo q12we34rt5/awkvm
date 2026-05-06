@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 
 pub mod codegen;
 pub mod parser;
+pub mod runtime;
 
 pub fn compile(input: &Path, output: Option<&Path>) -> Result<()> {
     let module = parser::load(input)

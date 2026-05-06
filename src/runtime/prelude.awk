@@ -1,0 +1,1 @@
+BEGIN { NEXT_ADDR = 1 }
