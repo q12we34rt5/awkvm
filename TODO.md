@@ -8,10 +8,7 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 ## In progress
 
-- **[cleanup]** Drop hardcoded `/opt/homebrew/opt/llvm@19` fallbacks
-  in `build.rs` and `tests/examples.rs`. Stash at `stash@{0}`. Use
-  `parser.rs::llvm_as_path`'s pattern (env var → PATH lookup, no
-  fallback path).
+_(empty — last item just landed)_
 
 ## Todo (next)
 
@@ -56,6 +53,7 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 ## Done (recent commits)
 
+- `c1a8068` Track ROADMAP / LIMITATIONS / TODO under git
 - `abc8936` Route cerr / clog to /dev/stderr; tests assert on stderr
 - `93daa6f` cout << double; cout_mixed fixture
 - `36968b2` cout << const char* binding (cppio prints for real)

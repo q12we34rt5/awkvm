@@ -69,16 +69,18 @@ fn main() {
     fs::write(&map_path, render_map(&entries)).expect("write probe_map.rs");
 }
 
+// Resolve clang++ via LLVM_SYS_191_PREFIX if it points at a real install,
+// otherwise fall back to PATH lookup. Mirrors src/parser.rs's llvm_as_path
+// so the project has one consistent way of locating LLVM tools — set the
+// env var in .cargo/config.toml (or the shell) and everything follows.
 fn clangxx_path() -> PathBuf {
-    let prefix = std::env::var("LLVM_SYS_191_PREFIX")
-        .unwrap_or_else(|_| "/opt/homebrew/opt/llvm@19".to_string());
-    let p = PathBuf::from(prefix).join("bin").join("clang++");
-    if p.is_file() {
-        p
-    } else {
-        // Fall back to PATH lookup. If absent, clang++ -version below will fail.
-        PathBuf::from("clang++")
+    if let Ok(prefix) = std::env::var("LLVM_SYS_191_PREFIX") {
+        let p = Path::new(&prefix).join("bin").join("clang++");
+        if p.is_file() {
+            return p;
+        }
     }
+    PathBuf::from("clang++")
 }
 
 fn compile_probe(clangxx: &Path, src: &Path, out_ll: &Path) {

@@ -22,9 +22,18 @@ fn awkvm_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_awkvm"))
 }
 
+// Mirrors src/parser.rs::llvm_as_path: try LLVM_SYS_191_PREFIX/bin/<name>
+// first (the project's pinned toolchain, set in .cargo/config.toml), then
+// fall back to a bare name so PATH lookup picks up whatever clang the host
+// has installed.
 fn llvm_bin(name: &str) -> PathBuf {
-    let prefix = option_env!("LLVM_SYS_191_PREFIX").unwrap_or("/opt/homebrew/opt/llvm@19");
-    PathBuf::from(prefix).join("bin").join(name)
+    if let Some(prefix) = option_env!("LLVM_SYS_191_PREFIX") {
+        let p = PathBuf::from(prefix).join("bin").join(name);
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from(name)
 }
 
 struct Outcome {
