@@ -12,8 +12,6 @@ _(empty — last item just landed)_
 
 ## Todo (next)
 
-- **[iostream]** `cout << char` regression fixture — verify it flows
-  through the cstr probe and rule out future probe-collision regressions.
 - **[iostream]** Capture cerr / clog mangled global names via probes
   so `_ostream_dest` in iostream.awk stops hardcoding libc++'s
   `_ZNSt3__14cerrE` / `_ZNSt3__14clogE`. Plan: generalize the probe
@@ -64,6 +62,8 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
+- _(this commit)_ cout_char regression fixture rules out a future
+  collision between an `_ostream_char` probe and `_ostream_cstr`
 - `c1a8068` Track ROADMAP / LIMITATIONS / TODO under git
 - `abc8936` Route cerr / clog to /dev/stderr; tests assert on stderr
 - `93daa6f` cout << double; cout_mixed fixture

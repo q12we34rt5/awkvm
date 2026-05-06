@@ -241,6 +241,11 @@ fn cout_int() {
 }
 
 #[test]
+fn cout_char() {
+    check("cout_char", "cpp", &[], 0, b"A");
+}
+
+#[test]
 fn cout_mixed() {
     check("cout_mixed", "cpp", &[], 0, b"x = 5, pi = 3.14\n");
 }
