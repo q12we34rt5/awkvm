@@ -12,3 +12,9 @@ pub const RUNTIME: &str = concat!(
     include_str!("cxa.awk"),
     include_str!("fp.awk"),
 );
+
+// libc / Itanium ABI bridge. Emitted block-by-block by codegen so that
+// helpers shadowed by a user-defined function of the same C name can be
+// dropped without affecting the rest. NOT part of RUNTIME above — see
+// codegen::emit_libc_helpers.
+pub const LIBC: &str = include_str!("libc.awk");

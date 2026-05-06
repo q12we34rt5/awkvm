@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 const MAX_ICALL_ARITY: usize = 8;
@@ -14,7 +14,7 @@ use llvm_ir::{
     types::{FPType, NamedStructDef, Typed, Types},
 };
 
-use crate::runtime::RUNTIME;
+use crate::runtime::{LIBC, RUNTIME};
 
 pub fn emit(module: &Module) -> Result<String> {
     let mut out = String::new();
@@ -52,10 +52,26 @@ pub fn emit(module: &Module) -> Result<String> {
         emit_function(&mut out, func, &mut cx)?;
     }
 
-    // Stubs for `declare`-only functions (libc++ internals, etc.). Most are
-    // intercepted by emit_libc at the call site, but if a stray direct call
-    // slips through we want it to no-op rather than crash gawk at runtime.
+    // libc / Itanium ABI helpers. Skip any that the user has provided their
+    // own definition of (custom operator new, malloc override, etc.) — their
+    // body has already been emitted above as fn_<name>.
+    let user_defined: HashSet<&str> = module
+        .functions
+        .iter()
+        .filter(|f| !f.basic_blocks.is_empty())
+        .map(|f| f.name.as_str())
+        .collect();
+    let helpers = parse_libc_helpers(LIBC);
+    let helper_names: HashSet<&str> = helpers.iter().map(|(n, _)| n.as_str()).collect();
+
+    // Stubs for `declare`-only functions: any libc / Itanium symbol the
+    // program references but doesn't define. Skip those covered by the
+    // helpers we're about to emit, otherwise gawk would see two definitions
+    // of fn_<name> and refuse to parse.
     for decl in &module.func_declarations {
+        if helper_names.contains(decl.name.as_str()) {
+            continue;
+        }
         let params: Vec<String> = decl
             .parameters
             .iter()
@@ -70,8 +86,54 @@ pub fn emit(module: &Module) -> Result<String> {
     }
     let _ = writeln!(&mut out);
 
+    for (name, body) in &helpers {
+        if user_defined.contains(name.as_str()) {
+            continue;
+        }
+        out.push_str(body);
+        out.push('\n');
+    }
+    let _ = writeln!(&mut out);
+
     emit_icall_dispatcher(&mut out, module, &fn_ids)?;
     Ok(out)
+}
+
+// Walks libc.awk and returns each helper as (c_name, awk_function_text).
+// Each helper is one `function fn_<c_name>(...) { ... }` definition; lines
+// preceding it (comments, blanks) are dropped — they document the source
+// file but aren't useful in the generated script. Brace balance is tracked
+// so a one-liner block like `function fn_atol(s) { return _atoi(s) }` and
+// a multi-line body both work.
+fn parse_libc_helpers(text: &str) -> Vec<(String, String)> {
+    fn brace_delta(s: &str) -> i32 {
+        s.matches('{').count() as i32 - s.matches('}').count() as i32
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut iter = text.lines().peekable();
+    while let Some(line) = iter.next() {
+        let trimmed = line.trim_start();
+        let Some(after) = trimmed.strip_prefix("function fn_") else {
+            continue;
+        };
+        let end = after
+            .find(|c: char| c == '(' || c.is_whitespace())
+            .expect("malformed libc.awk: function header without '('");
+        let name = after[..end].to_string();
+        let mut body = String::from(line);
+        let mut depth = brace_delta(line);
+        while depth > 0 {
+            let next = iter
+                .next()
+                .expect("malformed libc.awk: unbalanced braces in helper body");
+            body.push('\n');
+            body.push_str(next);
+            depth += brace_delta(next);
+        }
+        body.push('\n');
+        out.push((name, body));
+    }
+    out
 }
 
 // Assign sequential ids (starting at 1; 0 reserved for null) to every defined
@@ -798,7 +860,13 @@ fn emit_call(out: &mut String, call: &llvm_ir::instruction::Call, indent: &str) 
     }
 
     let args: Vec<String> = call.arguments.iter().map(|(op, _)| operand_str(op)).collect();
-    if emit_libc(out, &target_name, &args, call.dest.as_ref(), indent)? {
+    // printf is the only libc helper that can't be a plain awk function:
+    // its variadic args ride in the global _PA[] array, populated inline
+    // before the call. Everything else routes through fn_<name> like a
+    // user function and is provided by runtime/libc.awk (or by the user's
+    // own definition, when shadowing).
+    if target_name == "printf" {
+        emit_printf(out, &args, call.dest.as_ref(), indent);
         return Ok(());
     }
 
@@ -848,103 +916,6 @@ fn emit_indirect_call(
     }
     let _ = writeln!(out, "{indent}if (UNWINDING) return");
     Ok(())
-}
-
-// Maps stdlib calls onto runtime helpers / gawk built-ins. Returns true when
-// the call was handled.
-fn emit_libc(
-    out: &mut String,
-    name: &str,
-    args: &[String],
-    dest: Option<&Name>,
-    indent: &str,
-) -> Result<bool> {
-    let assign = |expr: String, out: &mut String| match dest {
-        Some(d) => {
-            let _ = writeln!(out, "{indent}{} = {expr}", name_to_var(d));
-        }
-        None => {
-            let _ = writeln!(out, "{indent}{expr}");
-        }
-    };
-    match name {
-        "puts" => {
-            let _ = writeln!(out, "{indent}print _cstr({})", args[0]);
-            // puts returns non-negative on success; pin to 0.
-            if let Some(d) = dest {
-                let _ = writeln!(out, "{indent}{} = 0", name_to_var(d));
-            }
-        }
-        "putchar" => {
-            let _ = writeln!(out, "{indent}printf \"%c\", {}", args[0]);
-            if let Some(d) = dest {
-                let _ = writeln!(out, "{indent}{} = {}", name_to_var(d), args[0]);
-            }
-        }
-        "printf" => emit_printf(out, args, dest, indent),
-        "malloc" => assign(format!("_alloc({})", args[0]), out),
-        "free" => {
-            // No-op: bump allocator never reclaims.
-        }
-        "exit" => {
-            let _ = writeln!(out, "{indent}exit {}", args[0]);
-        }
-        "abort" => {
-            let _ = writeln!(out, "{indent}exit 134");
-        }
-        "memcpy" => assign(format!("_memcpy({}, {}, {})", args[0], args[1], args[2]), out),
-        "memmove" => assign(format!("_memmove({}, {}, {})", args[0], args[1], args[2]), out),
-        "memset" => assign(format!("_memset({}, {}, {})", args[0], args[1], args[2]), out),
-        "strlen" => assign(format!("_strlen({})", args[0]), out),
-        "strcmp" => assign(format!("_strcmp({}, {})", args[0], args[1]), out),
-        // strtol/strtod ignore base/end-pointer for now: the dominant use is
-        // strtol(s, nullptr, 10) and strtod(s, nullptr).
-        "atoi" | "atol" | "atoll" | "strtol" | "strtoll" | "strtoul" | "strtoull" => {
-            assign(format!("_atoi({})", args[0]), out);
-        }
-        "atof" | "strtod" | "strtof" | "strtold" => {
-            assign(format!("_atof({})", args[0]), out);
-        }
-        "memset_pattern4" => {
-            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 4)", args[0], args[1], args[2]);
-        }
-        "memset_pattern8" => {
-            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 8)", args[0], args[1], args[2]);
-        }
-        "memset_pattern16" => {
-            let _ = writeln!(out, "{indent}_memset_pattern({}, {}, {}, 16)", args[0], args[1], args[2]);
-        }
-        // C++ ABI exception runtime. Stack unwinding doesn't exist here;
-        // we model it with a global UNWINDING flag, EXC_OBJ, and EXC_TYPE_ID
-        // (the typeinfo address, which we use as the type id).
-        "__cxa_allocate_exception" => assign(format!("_alloc({})", args[0]), out),
-        "__cxa_throw" => {
-            // (obj, typeinfo, dtor) — drop the destructor, set globals, return.
-            // The IR emits `unreachable` after this; the early return here
-            // makes that explicit.
-            let _ = writeln!(out, "{indent}EXC_OBJ = {}", args[0]);
-            let _ = writeln!(out, "{indent}EXC_TYPE_ID = {}", args[1]);
-            let _ = writeln!(out, "{indent}UNWINDING = 1");
-            let _ = writeln!(out, "{indent}return");
-        }
-        "__cxa_begin_catch" => assign(args[0].clone(), out),
-        "__cxa_end_catch" => {}
-        "__cxa_rethrow" => {
-            let _ = writeln!(out, "{indent}UNWINDING = 1");
-            let _ = writeln!(out, "{indent}return");
-        }
-        // C++ operator new / delete (and the nothrow / sized variants).
-        // Mangled names per Itanium ABI.
-        "_Znwm" | "_Znam" | "_ZnwmRKSt9nothrow_t" | "_ZnamRKSt9nothrow_t" => {
-            assign(format!("_alloc({})", args[0]), out);
-        }
-        "_ZdlPv" | "_ZdaPv" | "_ZdlPvm" | "_ZdaPvm" | "_ZdlPvRKSt9nothrow_t"
-        | "_ZdaPvRKSt9nothrow_t" => {
-            // No-op: bump allocator never reclaims.
-        }
-        _ => return Ok(false),
-    }
-    Ok(true)
 }
 
 fn emit_printf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &str) {
@@ -1132,7 +1103,9 @@ fn emit_invoke(
                 },
                 _ => bail!("invoke target is not a global reference"),
             };
-            if !emit_libc(out, &target_name, &args, Some(&inv.result), indent)? {
+            if target_name == "printf" {
+                emit_printf(out, &args, Some(&inv.result), indent);
+            } else {
                 let target = format!("fn_{}", sanitize(&target_name));
                 let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));
             }
