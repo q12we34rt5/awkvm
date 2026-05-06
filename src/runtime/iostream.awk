@@ -15,3 +15,12 @@ function _ostream_int(stream, val) {
     printf "%d", val
     return stream
 }
+
+# `cout << "literal"` lowers to libc++'s __put_character_sequence, which
+# takes the byte address and a precomputed length (so no NUL scan needed).
+function _ostream_cstr(stream, addr, len,    i) {
+    for (i = 0; i < len; i++) {
+        printf "%c", MEM[addr + i]
+    }
+    return stream
+}

@@ -199,7 +199,7 @@ fn table() {
 
 #[test]
 fn cppio() {
-    check("cppio", "cpp", &[], 0, b"");
+    check("cppio", "cpp", &[], 0, b"hello, awkvm\n");
 }
 
 #[test]

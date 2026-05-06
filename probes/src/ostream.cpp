@@ -16,3 +16,10 @@
 PROBE void awkvm_probe_ostream_int(std::ostream& os, int n) {
     os << n;
 }
+
+// `os << "literal"` lowers (under libc++ -O1) to a single internal call to
+// __put_character_sequence(os, ptr, len) rather than the textbook
+// `operator<<(ostream&, const char*)`. We probe what actually shows up.
+PROBE void awkvm_probe_ostream_cstr(std::ostream& os, const char* s) {
+    os << s;
+}
