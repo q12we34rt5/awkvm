@@ -12,15 +12,6 @@ _(empty — last item just landed)_
 
 ## Todo (next)
 
-- **[codegen]** Warn at codegen time when user `.ll` references a
-  probe-targeted symbol whose full mangled name (including libc++
-  ABI tag) isn't in `PROBE_MAP`. Today the mismatch (e.g. user
-  compiled with Apple Clang's `B8ne190102` while we have
-  `B8ne190107`) silently degrades to no-op stubs. Walk
-  `module.func_declarations`; for any name matching a "stem" we
-  recognize (e.g. `__put_character_sequence` regardless of suffix),
-  if the exact mangled name isn't in `PROBE_MAP`, eprintln a clear
-  hint mentioning toolchain pin. ~1 hour.
 - **[iostream]** Capture cerr / clog mangled global names via probes
   so `_ostream_dest` in iostream.awk stops hardcoding libc++'s
   `_ZNSt3__14cerrE` / `_ZNSt3__14clogE`. Plan: generalize the probe
@@ -69,6 +60,8 @@ _(empty — last item just landed)_
 
 ## Done (recent commits)
 
+- _(this commit)_ codegen warns at compile time when user .ll has a
+  probe-targeted libc++ symbol whose ABI tag doesn't match PROBE_MAP
 - `72e3384` ostream long / unsigned int / unsigned long / bool /
   void\* overloads + cout_overloads fixture; `Constant::IntToPtr` /
   `PtrToInt` / `BitCast` constexprs now pass through `constant_str`

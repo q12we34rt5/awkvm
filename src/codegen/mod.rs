@@ -69,6 +69,46 @@ pub fn emit(module: &Module) -> Result<String> {
     let helper_names: HashSet<&str> = helpers.iter().map(|(n, _)| n.as_str()).collect();
     let probe_names: HashSet<&str> = PROBE_MAP.iter().map(|(m, _)| *m).collect();
 
+    // Toolchain coupling check: warn loudly when the user's IR
+    // references a libc++ symbol whose tag-stripped form matches a
+    // probe entry but whose full mangled name doesn't. That's almost
+    // always an Apple-Clang-vs-Homebrew-Clang style mismatch — both
+    // libc++ versions name the same function, but tag it with their
+    // own ABI version (e.g. `B8ne190102` vs `B8ne190107`), so the
+    // recognized-call path silently degrades to a no-op stub.
+    let probe_stripped: HashSet<String> =
+        PROBE_MAP.iter().map(|(m, _)| strip_abi_tags(m)).collect();
+    // Walk both functions and func_declarations: at -O1 the templated
+    // libc++ helpers stay external (declarations only) and our probes
+    // capture them; at -O0 clang fully inlines them into user.ll as
+    // user-defined function bodies. Either way they show up in the IR
+    // and can mismatch on ABI tag.
+    let mismatched: HashSet<String> = module
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .chain(module.func_declarations.iter().map(|d| d.name.as_str()))
+        .filter(|name| !probe_names.contains(name))
+        .filter_map(|name| {
+            let stripped = strip_abi_tags(name);
+            if probe_stripped.contains(&stripped) {
+                Some(format!("{name}\n  Tag-stripped form: {stripped}"))
+            } else {
+                None
+            }
+        })
+        .collect();
+    for entry in &mismatched {
+        eprintln!(
+            "awkvm: warning: `{entry}`\n  This looks like a probe-targeted \
+             libc++ symbol whose ABI tag doesn't match PROBE_MAP. Calls \
+             route to a no-op stub (or to a user-body wrapper that itself \
+             calls a no-op stub), so output silently degrades. Hint: did \
+             your .ll come from a different clang than $LLVM_SYS_191_PREFIX? \
+             See LIMITATIONS.md \"Toolchain coupling\"."
+        );
+    }
+
     // Stubs for `declare`-only functions: any libc / Itanium symbol the
     // program references but doesn't define. Skip those covered by helpers
     // (which are about to be emitted as fn_<name>) or by the probe map
@@ -140,6 +180,36 @@ fn parse_libc_helpers(text: &str) -> Vec<(String, String)> {
         }
         body.push('\n');
         out.push((name, body));
+    }
+    out
+}
+
+// Strip Itanium ABI tags (`B<length><tag-chars>`) from a mangled name.
+// Used to detect toolchain mismatches: two libc++ versions naming the
+// same templated helper differ only in the tag content (e.g.
+// `B8ne190102` vs `B8ne190107`), so both reduce to the same canonical
+// form after stripping.
+fn strip_abi_tags(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // ABI-tag prefix: `B` followed by an ASCII digit sequence
+        // giving the tag length, then that many tag-chars.
+        if bytes[i] == b'B' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            let mut len = 0usize;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                len = len * 10 + (bytes[j] - b'0') as usize;
+                j += 1;
+            }
+            if j + len <= bytes.len() {
+                i = j + len;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
     }
     out
 }
