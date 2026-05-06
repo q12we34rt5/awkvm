@@ -59,11 +59,10 @@ error) on otherwise valid C / C++. For deeper context on each, see
   permanently bound to its initial output target in our model.
   Redirect idioms (`cout.rdbuf(captured.rdbuf())` for testing)
   silently won't work.
-- **libc++ ABI tag drift** — symbols like
-  `__put_character_sequence` carry a tag (`B8ne190107` on libc++ 19)
-  that shifts between minor versions. The probe pipeline catches the
-  drift at build time, but pre-built awk artifacts may not match a
-  different host's toolchain.
+- **libc++ ABI tag drift** — see "Toolchain coupling" below. libc++
+  tags templated helpers like `__put_character_sequence` with a
+  per-version suffix (`B8ne190102` vs `B8ne190107` etc.); awkvm's
+  probe pipeline pins to one specific tag at build time.
 - **libstdc++ symbol names** — the cerr / clog dispatcher hardcodes
   libc++'s `_ZNSt3__14cerrE` / `_ZNSt3__14clogE`. Under libstdc++ the
   names are `_ZSt4cerr` / `_ZSt4clog`; output silently falls through
@@ -90,6 +89,40 @@ error) on otherwise valid C / C++. For deeper context on each, see
 - **Tested toolchain**: clang 19 + libc++ 19 + macOS arm64. Other
   combinations are best-effort (Linux verification pass on the
   ROADMAP).
+
+## Toolchain coupling
+
+`awkvm` bakes its `PROBE_MAP` at `cargo build` time using the
+`clang++` at `$LLVM_SYS_191_PREFIX/bin/clang++` (Homebrew Clang 19
+by default, set in `.cargo/config.toml`). The mangled names captured
+there are valid **only for `.ll` files produced by the same
+toolchain**. If you compile your C/C++ with a different clang, any
+recognized stdlib symbol (most of `iostream`, anything else the
+probe pipeline learns) falls through to a no-op stub.
+
+Concretely on macOS: Apple Clang (`/usr/bin/clang`) ships its own
+libc++ that tags `__put_character_sequence` with `B8ne190102`;
+Homebrew Clang 19 tags it `B8ne190107`. `PROBE_MAP` only has the
+latter, so a `.ll` from Apple Clang runs but `cout << "literal"`
+produces no output. The mangled `<<` overloads for `int` / `long`
+etc. don't carry an ABI tag, so those still print — leading to
+mixed-output bugs that look like "spaces and newlines went missing"
+rather than a clean failure.
+
+The failure mode is **silent**: gawk exits cleanly with wrong /
+missing output. Codegen doesn't currently detect the mismatch.
+
+Workaround: drive your build through
+`/opt/homebrew/opt/llvm@19/bin/clang++` explicitly. Don't rely on
+`/usr/bin/clang` (or anything from PATH) unless you've verified
+your system clang matches `$LLVM_SYS_191_PREFIX`. The shipped
+`local/scripts/awkvmcc.sh` already pins to the right path; user
+build scripts should do the same.
+
+A proper fix would be a runtime sanity check at codegen time —
+walk `module.func_declarations` for any `__put_character_sequence`
+or other probe-targeted symbol and warn loudly if its full mangled
+name (including the ABI tag) isn't in `PROBE_MAP`. On the TODO list.
 
 ## Permanently out of scope
 
