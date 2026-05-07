@@ -524,6 +524,22 @@ fn cin_int() {
 }
 
 #[test]
+fn cin_unsigned() {
+    // unsigned (32-bit) tier: 4294967290 is just below 2^32 — fits
+    // exactly in awk's double, round-trips through the signed-model
+    // wrap. unsigned long (64-bit) reads in the same value via the
+    // 64-bit helper. Output uses cout's unsigned overload.
+    check_with_stdin(
+        "cin_unsigned",
+        "cpp",
+        &[],
+        b"4294967290 4294967290\n",
+        0,
+        b"4294967290 4294967290\n",
+    );
+}
+
+#[test]
 fn cin_mixed() {
     // 1234567890 fits comfortably in i64 (< 2^53), so awk's number
     // representation reads it back exactly. 3.14 round-trips with

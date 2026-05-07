@@ -16,6 +16,14 @@ PROBE void awkvm_probe_istream_long(std::istream& is, long& l) {
     is >> l;
 }
 
+PROBE void awkvm_probe_istream_uint(std::istream& is, unsigned& n) {
+    is >> n;
+}
+
+PROBE void awkvm_probe_istream_ulong(std::istream& is, unsigned long& n) {
+    is >> n;
+}
+
 PROBE void awkvm_probe_istream_double(std::istream& is, double& d) {
     is >> d;
 }

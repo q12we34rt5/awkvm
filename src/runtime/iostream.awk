@@ -128,3 +128,16 @@ function _istream_double(stream, dest,    tok) {
     _store_f64(dest, tok + 0)
     return stream
 }
+
+# `cin >> unsigned_var` — token-read, awk parses the leading numeric
+# prefix as a non-negative number. _store sign-extends, so values
+# above 2^(bits-1) wrap to negative in the awkvm signed model — same
+# convention as _ostream_unsigned uses on the read side.
+function _istream_unsigned(stream, dest, bits,    tok, v, lim) {
+    tok = _istream_read_token(stream)
+    v = tok + 0
+    lim = 2 ^ (bits - 1)
+    if (v >= lim) v -= 2 ^ bits
+    _store(dest, v, bits)
+    return stream
+}

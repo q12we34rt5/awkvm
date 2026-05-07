@@ -54,6 +54,12 @@ istream_cin     := src=/dev/stdin
 istream_int     => _istream_int(arg0, arg1, 32)
 istream_long    => _istream_int(arg0, arg1, 64)
 
+# cin >> unsigned / unsigned long. Token-read, awk parses leading
+# digits non-negatively, then _istream_unsigned wraps high values
+# into the awkvm signed integer model before `_store(addr, v, bits)`.
+istream_uint    => _istream_unsigned(arg0, arg1, 32)
+istream_ulong   => _istream_unsigned(arg0, arg1, 64)
+
 # cin >> double. Same token-read flow, but the destination is an
 # 8-byte IEEE 754 slot, so the helper goes through `_store_f64`.
 istream_double  => _istream_double(arg0, arg1)
