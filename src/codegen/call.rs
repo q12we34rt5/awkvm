@@ -5,7 +5,7 @@ use either::Either;
 use llvm_ir::{Constant, Function, Name, Operand, Terminator};
 
 use super::MAX_ICALL_ARITY;
-use super::names::{block_label, constant_str, name_to_var, operand_str, sanitize};
+use super::names::{block_label, constant_str, func_to_var, name_to_var, operand_str};
 use super::probe_map::PROBE_MAP;
 use super::types::LayoutCx;
 
@@ -51,7 +51,7 @@ pub(super) fn emit_call(
         return Ok(());
     }
 
-    let target = format!("fn_{}", sanitize(&target_name));
+    let target = func_to_var(&target_name);
     let call_expr = format!("{target}({})", args.join(", "));
 
     match &call.dest {
@@ -400,7 +400,7 @@ fn emit_invoke(
             if target_name == "printf" {
                 emit_printf(out, &args, Some(&inv.result), indent);
             } else {
-                let target = format!("fn_{}", sanitize(&target_name));
+                let target = func_to_var(&target_name);
                 let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));
             }
         }

@@ -85,6 +85,106 @@ function fn_strtod(s, end) { return _atof(s) }
 function fn_strtof(s, end) { return _atof(s) }
 function fn_strtold(s, end) { return _atof(s) }
 
+# system() — gawk system(s) is already blocking fork+exec.
+function fn_system(cmd) { return system(_cstr(cmd)) }
+
+# stdio FILE* bridge. fopen allocates a 1-byte address as the FILE*
+# handle, registers it in the stream tables, and returns the address.
+# NULL (0) is returned when the mode string isn't recognized; gawk's
+# open-on-first-write means a bad path doesn't surface until later
+# writes/reads fail. Modes: "r" / "w" / "a" with optional "b" suffix
+# (binary; ignored — gawk has no text/binary distinction). "+" forms
+# (read+write) aren't supported and return NULL.
+function fn_fopen(path, mode,    addr, p, m) {
+    p = _cstr(path)
+    m = _cstr(mode)
+    addr = _alloc(1)
+    if (m == "w" || m == "wb")      _stream_open_w(addr, p, "file_w")
+    else if (m == "a" || m == "ab") _stream_open_w(addr, p, "file_a")
+    else if (m == "r" || m == "rb") _stream_open_r(addr, p, "file_r")
+    else                            return 0
+    return addr
+}
+
+function fn_fclose(fp) {
+    _stream_close(fp)
+    return 0
+}
+
+# fwrite / fread always succeed in our model (gawk doesn't surface
+# I/O errors at the byte level). fread returns the floor of bytes-
+# read / element-size on EOF mid-element, matching the C contract.
+# Note: line-buffered read fabricates a trailing "\n" when the
+# source's final line has no newline — fine for text, lossy for
+# binary files that don't happen to end on a newline boundary.
+function fn_fwrite(buf, size, count, fp,    total, i) {
+    total = size * count
+    for (i = 0; i < total; i++) _stream_write_byte(fp, MEM[buf + i])
+    return count
+}
+
+function fn_fread(buf, size, count, fp,    total, i, b) {
+    total = size * count
+    for (i = 0; i < total; i++) {
+        b = _stream_read_byte(fp)
+        if (b < 0) return int(i / size)
+        MEM[buf + i] = b
+    }
+    return count
+}
+
+function fn_fputc(c, fp) {
+    _stream_write_byte(fp, c)
+    return c
+}
+
+# fputs writes the C-string at addr (NUL-terminated, no trailing newline)
+# to fp. Returns 0 on success per ISO C (non-negative).
+function fn_fputs(addr, fp,    i, b) {
+    i = 0
+    while ((b = MEM[addr + i]) != 0) {
+        _stream_write_byte(fp, b)
+        i++
+    }
+    return 0
+}
+
+function fn_fgetc(fp) { return _stream_read_byte(fp) }
+
+# fgets reads up to size-1 bytes (or until newline / EOF), NUL-
+# terminates, returns the buffer address (0 / NULL on immediate EOF).
+function fn_fgets(buf, size, fp,    i, b) {
+    if (size <= 1) return 0
+    i = 0
+    while (i < size - 1) {
+        b = _stream_read_byte(fp)
+        if (b < 0) {
+            if (i == 0) return 0
+            break
+        }
+        MEM[buf + i] = b
+        i++
+        if (b == 10) break    # newline ends the read but is included
+    }
+    MEM[buf + i] = 0
+    return buf
+}
+
+# popen / pclose — pipe streams. "r" reads a child's stdout via
+# `cmd | getline`; "w" feeds a child's stdin via `print | cmd`.
+# pclose surfaces the child exit status from gawk's close().
+function fn_popen(cmd, mode,    addr, c, m) {
+    c = _cstr(cmd)
+    m = _cstr(mode)
+    addr = _alloc(1)
+    if (m == "r")      _stream_open_r(addr, c, "pipe_r")
+    else if (m == "w") _stream_open_w(addr, c, "pipe_w")
+    else               return 0
+    return addr
+}
+
+function fn_pclose(fp) { return _stream_close(fp) }
+
 # C++ exception ABI. __cxa_throw sets the global unwind state; the
 # caller's post-call `if (UNWINDING) return` then propagates the throw
 # up the stack until a landingpad clears it.

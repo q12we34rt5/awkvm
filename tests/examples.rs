@@ -374,6 +374,32 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn file_io() {
+    // fopen → fwrite ×2 → fclose → fopen → fread → fclose → printf.
+    // Path lives in a per-test TempDir so the file is auto-cleaned;
+    // the read-side fread asks for 32 bytes vs the 12 actually
+    // written, exercising the EOF return path.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("io.txt");
+    let path_str = path.to_str().expect("non-utf8 path");
+    let out = run_fixture("file_io", "c", &[path_str]);
+    let expected = b"read 12 bytes:\nhello\nworld\n";
+    assert_eq!(out.exit, 0, "[file_io] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[file_io] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[file_io] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn awkvm_export() {
     // `awkvm --library` + `__attribute__((annotate("awkvm_export")))`:
     // expose three primitive-only functions to an external awk caller

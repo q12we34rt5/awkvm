@@ -16,8 +16,23 @@ pub(super) fn name_to_var(name: &Name) -> String {
     }
 }
 
+// Strip the LLVM "literal asm" prefix from an IR symbol name. Names
+// that were emitted via `__asm__("X")` come through as `\x01X`; on
+// Darwin, libc's LFS-renamed functions (fopen / fwrite / fputs /
+// freopen / popen) use this with a leading underscore (`\x01_fopen`).
+// The `\x01` is a directive to the assembler, not part of the
+// linker symbol — strip it (and the Darwin underscore prefix when
+// present) so libc helper lookups are platform-agnostic.
+pub(super) fn canonical_fn_name(s: &str) -> &str {
+    if let Some(rest) = s.strip_prefix('\x01') {
+        rest.strip_prefix('_').unwrap_or(rest)
+    } else {
+        s
+    }
+}
+
 pub(super) fn func_to_var(name: &str) -> String {
-    format!("fn_{}", sanitize(name))
+    format!("fn_{}", sanitize(canonical_fn_name(name)))
 }
 
 pub(super) fn global_to_var(name: &Name) -> String {

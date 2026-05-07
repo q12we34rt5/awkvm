@@ -17,7 +17,7 @@ mod types;
 
 const MAX_ICALL_ARITY: usize = 8;
 
-use names::{func_to_var, name_to_var};
+use names::{canonical_fn_name, func_to_var, name_to_var};
 use probe_map::PROBE_MAP;
 use types::LayoutCx;
 
@@ -96,7 +96,7 @@ pub fn emit(
         .collect();
 
     for func in &module.functions {
-        if let Some(rest) = awk_fns.get(func.name.as_str()) {
+        if let Some(rest) = awk_fns.get(canonical_fn_name(func.name.as_str())) {
             emit_awk_fn(&mut out, &func.name, &func.parameters, rest)?;
         } else {
             func::emit_function(&mut out, func, &mut cx)?;
@@ -110,7 +110,7 @@ pub fn emit(
         .functions
         .iter()
         .filter(|f| !f.basic_blocks.is_empty())
-        .map(|f| f.name.as_str())
+        .map(|f| canonical_fn_name(f.name.as_str()))
         .collect();
     let helpers = parse_libc_helpers(LIBC);
     let helper_names: HashSet<&str> = helpers.iter().map(|(n, _)| n.as_str()).collect();
@@ -162,16 +162,17 @@ pub fn emit(
     // (whose call sites have been rewritten in-line, so fn_<name> is dead
     // code we'd rather not emit at all).
     for decl in &module.func_declarations {
-        if helper_names.contains(decl.name.as_str())
-            || probe_names.contains(decl.name.as_str())
-            || linked_fn_c_names.contains(decl.name.as_str())
+        let canon = canonical_fn_name(decl.name.as_str());
+        if helper_names.contains(canon)
+            || probe_names.contains(canon)
+            || linked_fn_c_names.contains(canon)
         {
             continue;
         }
         // `awkvm_fn` annotation on a declare-only function: emit the
         // body just like for full definitions. Lets users skip writing
         // a placeholder C body when they don't want to dual-build.
-        if let Some(rest) = awk_fns.get(decl.name.as_str()) {
+        if let Some(rest) = awk_fns.get(canon) {
             emit_awk_fn(&mut out, &decl.name, &decl.parameters, rest)?;
             continue;
         }
