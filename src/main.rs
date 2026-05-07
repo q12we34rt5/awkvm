@@ -12,9 +12,16 @@ struct Cli {
     /// Output awk script path (defaults to stdout)
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Concatenate awk source from this file into the emitted script.
+    /// Functions defined as `function fn_<name>(...)` become callable
+    /// from C-side `extern <T> <name>(...)` declarations and from
+    /// inline awk via the same `fn_<name>`. May be passed multiple times.
+    #[arg(long, value_name = "FILE")]
+    link: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    awkvm::compile(&cli.input, cli.output.as_deref())
+    awkvm::compile(&cli.input, cli.output.as_deref(), &cli.link)
 }

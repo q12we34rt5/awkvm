@@ -48,6 +48,16 @@ fn run_fixture(stem: &str, ext: &str, args: &[&str]) -> Outcome {
 }
 
 fn run_fixture_with_stdin(stem: &str, ext: &str, args: &[&str], stdin: &[u8]) -> Outcome {
+    run_fixture_full(stem, ext, args, stdin, &[])
+}
+
+fn run_fixture_full(
+    stem: &str,
+    ext: &str,
+    args: &[&str],
+    stdin: &[u8],
+    link: &[&str],
+) -> Outcome {
     let src = manifest_dir().join("examples").join(format!("{stem}.{ext}"));
     assert!(src.exists(), "fixture missing: {}", src.display());
 
@@ -56,7 +66,7 @@ fn run_fixture_with_stdin(stem: &str, ext: &str, args: &[&str], stdin: &[u8]) ->
     let awk = tmp.path().join(format!("{stem}.awk"));
 
     compile_to_ll(&src, ext == "cpp", &ll);
-    awkvm_emit(&ll, &awk);
+    awkvm_emit(&ll, &awk, link);
     run_gawk(&awk, args, stdin)
 }
 
@@ -84,14 +94,14 @@ fn compile_to_ll(src: &Path, cpp: bool, out: &Path) {
     );
 }
 
-fn awkvm_emit(ll: &Path, awk: &Path) {
-    let output = Command::new(awkvm_bin())
-        .arg(ll)
-        .arg("-o")
-        .arg(awk)
-        .stderr(Stdio::null())
-        .output()
-        .expect("spawn awkvm");
+fn awkvm_emit(ll: &Path, awk: &Path, link: &[&str]) {
+    let mut cmd = Command::new(awkvm_bin());
+    cmd.arg(ll).arg("-o").arg(awk);
+    for name in link {
+        cmd.arg("--link")
+            .arg(manifest_dir().join("examples").join(name));
+    }
+    let output = cmd.stderr(Stdio::null()).output().expect("spawn awkvm");
     assert!(
         output.status.success(),
         "awkvm failed on {}\nstderr:\n{}",
@@ -318,6 +328,19 @@ fn inline_awk_regex() {
     // gawk regex (`gsub`) reachable through inline awk. C string in,
     // C string out via the same _cstr / _str_to_mem marshal pair.
     check("inline_awk_regex", "c", &[], 0, b"hell0 w0rld\n");
+}
+
+#[test]
+fn link_basic() {
+    // `--link link_basic.awk` provides a `fn_clip` definition; the C
+    // side declares `extern int clip(...)` and calls it directly.
+    let out = run_fixture_full("link_basic", "c", &[], b"", &["link_basic.awk"]);
+    assert_eq!(out.exit, 0);
+    assert_eq!(
+        out.stdout.as_slice(),
+        b"clip(  5,  0, 10) = 5\nclip( -3,  0, 10) = 0\nclip( 20,  0, 10) = 10\n"
+    );
+    assert_eq!(out.stderr.as_slice(), b"");
 }
 
 // --- C++ fixtures -------------------------------------------------------

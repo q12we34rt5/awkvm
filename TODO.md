@@ -42,17 +42,10 @@ v0.2.0 story.
   Note: clang rejects `extern "awk" {}` (verified — "unknown
   linkage language"), so we go via `annotate` instead.
 
-- **[ffi]** `awkvm --link helpers.awk` flag. ~half-day. Concatenate
-  a separate `.awk` file into the output, defining functions C-side
-  declares as `extern`. Different shape from inline awk: no
-  annotation in C source, just a real `.awk` file with proper
-  editor / linter / formatter support. Fits "200 lines of awk
-  helpers should live in their own file" pattern.
-
-Inline awk landed in the commit linked under "Done" below. Logical
-sequence for the rest: AWK_EXPORT next (annotation infra carries
-forward to the body-annotation item), then `awkvm_body` (cheap once
-annotations work) and `--link` (independent — can slot anywhere).
+Inline awk and `--link helpers.awk` landed (commits below). Remaining
+v0.2.0 sequence: AWK_EXPORT next (annotation infra carries forward
+to the body-annotation item), then `awkvm_body` (cheap once
+annotations work).
 
 ## Todo (next, post-v0.2.0)
 
@@ -96,7 +89,12 @@ annotations work) and `--link` (independent — can slot anywhere).
 
 ## Done (recent commits)
 
-- _(this commit)_ Inline awk asm escape unescaping (`\\` for backslash,
+- _(this commit)_ `awkvm --link helpers.awk` — concat a hand-written
+  awk file into the emitted script; `function fn_<name>(...)` entries
+  become callable from C-side `extern` declarations. `docs/link-awk.md`
+  documents the convention.
+- `16e61e0` `docs/inline-awk.md` cookbook + Features pointer in README
+- `23b03fa` Inline awk asm escape unescaping (`\\` for backslash,
   `\HH` for hex, `$$` for literal `$`); `_str_to_mem` runtime helper
   closes the awk-string → C-string marshal direction; three new
   fixtures cover string round-trip, subprocess capture, and gawk regex

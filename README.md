@@ -40,9 +40,12 @@ for release notes.
   for dropping raw awk into C / C++. Lets you reach gawk's full
   surface (regex, subprocess pipes, file I/O, coprocess, time, ...)
   without us writing per-feature stubs.
+- [`docs/link-awk.md`](docs/link-awk.md) — `awkvm --link helpers.awk`
+  pulls a hand-written awk file into the emitted script; functions
+  defined as `fn_<name>` become callable from C-side `extern` decls.
 
-`AWK_EXPORT` (awk-callable C library mode) and `--link helpers.awk`
-are queued for v0.2.0; their guides land alongside.
+`AWK_EXPORT` (the inverse — C functions exposed to outside awk
+scripts) is queued for v0.2.0; its guide lands alongside.
 
 ## Build
 
