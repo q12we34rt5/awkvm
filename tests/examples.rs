@@ -378,6 +378,33 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn ifstream_extract() {
+    // ofstream writes three primitives space-separated; ifstream
+    // reads them back via `>>`. Proves ifstream's extraction path
+    // works through cin's `_istream_*` bindings via base-class
+    // inheritance — what's NOT covered is `read(buf, n)` /
+    // `gcount()` block-read (deferred to v0.4.0).
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("data.txt");
+    let path_str = path.to_str().expect("path utf8");
+    let out = run_fixture("io/ifstream_extract", "cpp", &[path_str]);
+    let expected = b"a=42 b=3.14 c=1234567890\n";
+    assert_eq!(out.exit, 0, "[ifstream_extract] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[ifstream_extract] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[ifstream_extract] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn io_mixed() {
     // v0.3.0 demo: libc fopen/fwrite/fclose AND C++ ofstream/<< on
     // the same stream subsystem. Two paths to two files; readback
