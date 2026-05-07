@@ -21,6 +21,7 @@ fn run_test(name: &str) {
     let test = dir.join(format!("tests/runtime/{name}_test.awk"));
 
     let output = Command::new("gawk")
+        .env("LC_ALL", "C")
         .arg("-f")
         .arg(runtime_file.path())
         .arg("-f")
