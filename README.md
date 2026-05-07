@@ -32,6 +32,18 @@ See [LIMITATIONS.md](LIMITATIONS.md) for current behaviour gaps,
 [ROADMAP.md](ROADMAP.md) for direction, [CHANGELOG.md](CHANGELOG.md)
 for release notes.
 
+## Feature guides
+
+`docs/` collects per-feature recipes. Today:
+
+- [`docs/inline-awk.md`](docs/inline-awk.md) — `__asm__("AWKVM:...")`
+  for dropping raw awk into C / C++. Lets you reach gawk's full
+  surface (regex, subprocess pipes, file I/O, coprocess, time, ...)
+  without us writing per-feature stubs.
+
+`AWK_EXPORT` (awk-callable C library mode) and `--link helpers.awk`
+are queued for v0.2.0; their guides land alongside.
+
 ## Build
 
 LLVM 19 + gawk are required. On macOS (Apple Silicon):
