@@ -8,25 +8,71 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 ## In progress
 
-_(empty — v0.2.0 FFI surface is complete; ready for tag + release
-notes)_
+_(empty — picking up v0.3.0 next)_
 
-## Next major: v0.2.0 — C ↔ awk FFI
+## Next major: v0.3.0 — I/O subsystem
 
-All four pieces of the bidirectional FFI surface have landed: inline
-awk, `--link helpers.awk`, `awkvm_fn` body annotation, and
-`awkvm_export` + `--library`. Next step is the v0.2.0 release
-itself — CHANGELOG, README polish, version bump, tag.
+Coherent release theme: design awkvm's stream subsystem once, layer
+both the libc and iostream APIs on top. The two API surfaces share
+the same gawk primitives (`print > "file"`, `getline x < "file"`,
+`cmd | getline`, `print | cmd`, `system()`); doing them together
+means designing the stream model once instead of refactoring when
+the second consumer comes online.
 
-## Todo (next, post-v0.2.0)
+### Stream subsystem (foundation)
 
-- **[iostream]** Extend cin further: `>> std::string`, `>> unsigned`
-  variants. The numeric tier (int / long / double) is wired; string
-  needs libc++-layout-aware writes (similar story to `cout << string`
-  but on the read side).
+- fd-keyed table on the awk side mapping descriptor →
+  (kind, gawk-target). Kinds: file, pipe-read, pipe-write, stdin,
+  stdout, stderr, in-memory (for sstream).
+- `/dev/stdin` line buffer reuse — the existing `cin` token reader
+  is the closest precedent; lift it into a stream-keyed buffer so
+  `getline(cin, ...)` and `fread(stdin, ...)` share state.
+- Read / write / close primitives that both API surfaces call.
+
+### libc bridge
+
+- **[libc-io]** `system()` — gawk `system(s)` is already blocking
+  fork+exec; one-line in `emit_libc`.
+- **[libc-io]** `fopen` / `fwrite` / `fclose` write path — gawk
+  `print > "file"` + `close("file")` already provides the
+  underlying capability. Per-byte `printf "%c"` for binary data.
+- **[libc-io]** `fread` line-buffered, slice into caller buffer.
+  Uglier than fwrite — gawk's `getline` is line-based.
+- **[libc-io]** `popen` / `pclose` — `cmd | getline` (read mode)
+  / `print | cmd` (write mode). Standard POSIX C API; user code
+  doesn't know it's awk.
+- **[libc-io]** `scanf` / `sscanf` / `fscanf` — small parser on
+  top of the format spec; reuses `_atoi` / `_atof`. ~one day.
+
+### iostream bridge
+
+- **[iostream]** `std::endl` proper support — needs ctype facet
+  modeling so the inlined `widen('\n')` virtual dispatch resolves.
+  Fallback: documented permanent workaround (use `"\n"`).
 - **[iostream]** `std::getline(cin, str)`. Maps directly to gawk's
-  `getline x < "/dev/stdin"`; should be a thin wrapper over the
-  existing line-buffer state.
+  `getline x < "/dev/stdin"`; thin wrapper over the line buffer.
+- **[iostream]** Extend cin further: `>> std::string`,
+  `>> unsigned` variants. Numeric tier (int / long / double) is
+  wired; string needs libc++-layout-aware writes (similar story
+  to `cout << string` but on the read side).
+- **[iostream]** `<iomanip>` (setw / setfill / setprecision /
+  hex / oct / dec / fixed / scientific). Per-stream format state
+  on the awk side + per-helper consultation.
+- **[iostream]** `<sstream>` + `<fstream>` + `cout.rdbuf(...)`
+  swap as one streambuf-indirection unit. Two-level dispatch
+  table (`ostream → streambuf id → target`) replaces the current
+  cout/cerr/clog identity check.
+
+### Demo target
+
+End-to-end fixture exercising both surfaces in one program:
+`fopen("file", "w"); fprintf(fp, ...)` and
+`std::ofstream f; f << ...` writing to a verified output file.
+Plus a roundtrip: write via libc, read via iostream (or vice
+versa) to prove the descriptor table is shared.
+
+Estimated effort: ~one week. Bigger than v0.2.0 (~3 days), but
+release story is clean — "awkvm now has a real I/O subsystem".
 
 ## Todo (later)
 
@@ -41,16 +87,6 @@ itself — CHANGELOG, README polish, version bump, tag.
   width-bound arithmetic) through `_trunc(..., bits)` based on the
   IR result type. Affects any heavily-arithmetic IR that clang
   optimizes via the magic-number reciprocal trick.
-- **[iostream]** `<iomanip>` (setw / setfill / setprecision /
-  hex / oct / dec / fixed / scientific). Per-stream format state in
-  awk + per-helper consultation.
-- **[iostream]** `<sstream>` + `<fstream>` + `cout.rdbuf(...)` swap
-  as one streambuf-indirection unit. Two-level dispatch table
-  (`ostream → streambuf id → target`) replaces the current
-  cout/cerr/clog identity check.
-- **[iostream]** `std::endl` proper support — needs ctype facet
-  modeling so the inlined `widen('\n')` virtual dispatch resolves.
-  Or stays as a documented permanent workaround (use `"\n"`).
 - **[adt]** D2-D6 — lift `std::string` / `std::vector` / `std::map` to
   awk-native representation. Performance project.
 - **[codegen]** Phi cycle parallel copy.
@@ -62,6 +98,23 @@ itself — CHANGELOG, README polish, version bump, tag.
 - **[docs]** README "Limitations" section, mining from
   `LIMITATIONS.md` once stable.
 
+## Future release candidates (post-v0.3.0)
+
+Themes ordered roughly by impact-to-effort, each its own minor
+release:
+
+- **v0.4.0 — Tooling / DX.** `awkvmcc` driver wrapping
+  `clang -emit-llvm` + `llvm-link` + awkvm into a cc-style binary;
+  source maps from awk → C/C++ line via IR `!dbg`; `awkvm trace`
+  for BB-transition logging; better error messages with function /
+  block context.
+- **v0.5.0 — CI / release infrastructure.** GitHub Actions over
+  (macOS / Linux × clang / gawk versions); Linux verification
+  pass on the existing fixture suite; pre-built binary releases.
+- **v0.6.0 — ADT lifting.** D2-D6 from "Todo (later)" — start
+  with `std::string`, then `std::vector`, then `std::map`. Big
+  performance lift for string-heavy programs.
+
 ## Probably won't do
 
 - **[numerics]** i128 bignum — needs a full bignum runtime; cost
@@ -71,7 +124,11 @@ itself — CHANGELOG, README polish, version bump, tag.
 
 ## Done (recent commits)
 
-- _(this commit)_ `awkvm_export` + `--library`. Annotation
+- `3066644` v0.2.0 release: CHANGELOG, version bump, tag
+- `b2b65a1` Multi-library limitation documented — combine `.bc`
+  files via `llvm-link` before `awkvm`, not awk outputs
+  downstream via `gawk -f -f`
+- `a0a6100` `awkvm_export` + `--library`. Annotation
   `__attribute__((annotate("awkvm_export")))` exposes a C function
   to outside awk via a bare-name wrapper that forwards into the
   existing `fn_<name>` body. `--library` flag skips the
