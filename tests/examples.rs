@@ -61,9 +61,12 @@ fn run_fixture_full(
     let src = manifest_dir().join("examples").join(format!("{stem}.{ext}"));
     assert!(src.exists(), "fixture missing: {}", src.display());
 
+    // Strip subdir prefix when naming temp artifacts — `examples/<cat>/<name>.<ext>`
+    // is the source path; the `.ll` / `.awk` files only need a unique basename.
+    let basename = stem.rsplit('/').next().unwrap_or(stem);
     let tmp = TempDir::new().expect("tempdir");
-    let ll = tmp.path().join(format!("{stem}.ll"));
-    let awk = tmp.path().join(format!("{stem}.awk"));
+    let ll = tmp.path().join(format!("{basename}.ll"));
+    let awk = tmp.path().join(format!("{basename}.awk"));
 
     compile_to_ll(&src, ext == "cpp", &ll);
     awkvm_emit(&ll, &awk, link);
@@ -121,9 +124,10 @@ fn run_export_fixture(stem: &str, ext: &str) -> Outcome {
     assert!(src.exists(), "fixture missing: {}", src.display());
     assert!(caller.exists(), "caller missing: {}", caller.display());
 
+    let basename = stem.rsplit('/').next().unwrap_or(stem);
     let tmp = TempDir::new().expect("tempdir");
-    let ll = tmp.path().join(format!("{stem}.ll"));
-    let lib_awk = tmp.path().join(format!("{stem}.awk"));
+    let ll = tmp.path().join(format!("{basename}.ll"));
+    let lib_awk = tmp.path().join(format!("{basename}.awk"));
 
     compile_to_ll(&src, ext == "cpp", &ll);
 
@@ -276,12 +280,12 @@ fn check_full(
 
 #[test]
 fn add() {
-    check("add", "c", &[], 5, b"");
+    check("basics/add", "c", &[], 5, b"");
 }
 
 #[test]
 fn agg() {
-    check("agg", "c", &[], 46, b"");
+    check("basics/agg", "c", &[], 46, b"");
 }
 
 // argv prints argv[0] whose content differs between a native binary and
@@ -289,59 +293,59 @@ fn agg() {
 // exit code, which is sum-of-arg-strlens and is host-independent.
 #[test]
 fn argv() {
-    check_exit("argv", "c", &["foo", "bar"], 6);
+    check_exit("basics/argv", "c", &["foo", "bar"], 6);
 }
 
 #[test]
 fn bits() {
-    check("bits", "c", &[], 83, b"");
+    check("basics/bits", "c", &[], 83, b"");
 }
 
 #[test]
 fn buf() {
-    check("buf", "c", &[], 120, b"");
+    check("basics/buf", "c", &[], 120, b"");
 }
 
 #[test]
 fn floats() {
-    check("floats", "c", &[], 14, b"");
+    check("basics/floats", "c", &[], 14, b"");
 }
 
 #[test]
 fn fnptr() {
-    check("fnptr", "c", &[], 11, b"");
+    check("basics/fnptr", "c", &[], 11, b"");
 }
 
 #[test]
 fn hello() {
-    check("hello", "c", &[], 0, b"hello, world! 42\ndone\n");
+    check("basics/hello", "c", &[], 0, b"hello, world! 42\ndone\n");
 }
 
 #[test]
 fn point() {
-    check("point", "c", &[], 39, b"");
+    check("basics/point", "c", &[], 39, b"");
 }
 
 #[test]
 fn str_example() {
-    check("str", "c", &[], 98, b"");
+    check("basics/str", "c", &[], 98, b"");
 }
 
 #[test]
 fn sum() {
-    check("sum", "c", &[], 15, b"");
+    check("basics/sum", "c", &[], 15, b"");
 }
 
 #[test]
 fn table() {
-    check("table", "c", &[], 70, b"");
+    check("basics/table", "c", &[], 70, b"");
 }
 
 #[test]
 fn inline_awk() {
     // 7 * 7 = 49; 3 * 4 + 5 = 17. Verifies `$N` substitution covers
     // both output (`%0`) and several input operands (`%1` / `%2` / `%3`).
-    check("inline_awk", "c", &[], 0, b"sq=49 r=17\n");
+    check("ffi/inline_awk", "c", &[], 0, b"sq=49 r=17\n");
 }
 
 #[test]
@@ -349,7 +353,7 @@ fn inline_awk_str() {
     // C string → awk string → toupper → back to C string. Exercises
     // _cstr (MEM→awk) and _str_to_mem (awk→MEM) marshaling helpers
     // through a single inline-awk site.
-    check("inline_awk_str", "c", &[], 0, b"HELLO, WORLD\n");
+    check("ffi/inline_awk_str", "c", &[], 0, b"HELLO, WORLD\n");
 }
 
 #[test]
@@ -358,7 +362,7 @@ fn inline_awk_pipe() {
     // into an awk variable, then handed back to C as a char*.
     // Uses `printf hello` (no trailing newline) for deterministic output.
     check(
-        "inline_awk_pipe",
+        "ffi/inline_awk_pipe",
         "c",
         &[],
         0,
@@ -370,7 +374,7 @@ fn inline_awk_pipe() {
 fn inline_awk_regex() {
     // gawk regex (`gsub`) reachable through inline awk. C string in,
     // C string out via the same _cstr / _str_to_mem marshal pair.
-    check("inline_awk_regex", "c", &[], 0, b"hell0 w0rld\n");
+    check("ffi/inline_awk_regex", "c", &[], 0, b"hell0 w0rld\n");
 }
 
 #[test]
@@ -384,7 +388,7 @@ fn io_mixed() {
     let path_a = tmp.path().join("a.txt");
     let path_b = tmp.path().join("b.txt");
     let out = run_fixture(
-        "io_mixed",
+        "io/io_mixed",
         "cpp",
         &[
             path_a.to_str().expect("path_a utf8"),
@@ -416,7 +420,7 @@ fn file_io() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().join("io.txt");
     let path_str = path.to_str().expect("non-utf8 path");
-    let out = run_fixture("file_io", "c", &[path_str]);
+    let out = run_fixture("io/file_io", "c", &[path_str]);
     let expected = b"read 12 bytes:\nhello\nworld\n";
     assert_eq!(out.exit, 0, "[file_io] exit: {}", out.exit);
     assert_eq!(
@@ -439,7 +443,7 @@ fn awkvm_export() {
     // expose three primitive-only functions to an external awk caller
     // via bare-name wrappers. Caller runs entirely in gawk; the
     // wrappers forward into `fn_<name>` bodies emitted from C.
-    let out = run_export_fixture("awkvm_export", "c");
+    let out = run_export_fixture("ffi/awkvm_export", "c");
     assert_eq!(out.exit, 0, "[awkvm_export] exit: {}", out.exit);
     let expected = b"triangle(5) = 15\n\
                      triangle(10) = 55\n\
@@ -470,7 +474,7 @@ fn awkvm_fn() {
     // missed (it passed by accident even when fn_clip referenced
     // undefined awk variables, because the body was never reached).
     check(
-        "awkvm_fn",
+        "ffi/awkvm_fn",
         "c",
         &["0", "10", "-3", "5", "20"],
         0,
@@ -482,7 +486,7 @@ fn awkvm_fn() {
 fn link_basic() {
     // `--link link_basic.awk` provides a `fn_clip` definition; the C
     // side declares `extern int clip(...)` and calls it directly.
-    let out = run_fixture_full("link_basic", "c", &[], b"", &["link_basic.awk"]);
+    let out = run_fixture_full("ffi/link_basic", "c", &[], b"", &["ffi/link_basic.awk"]);
     assert_eq!(out.exit, 0);
     assert_eq!(
         out.stdout.as_slice(),
@@ -498,7 +502,7 @@ fn link_basic_cpp() {
     // mangles `clip` to `_Z4clipiii` and the linked `fn_clip` doesn't
     // match, so this test would print "0 0 0". Shares the same helper
     // .awk file as link_basic.
-    let out = run_fixture_full("link_basic_cpp", "cpp", &[], b"", &["link_basic.awk"]);
+    let out = run_fixture_full("ffi/link_basic_cpp", "cpp", &[], b"", &["ffi/link_basic.awk"]);
     assert_eq!(out.exit, 0);
     assert_eq!(
         out.stdout.as_slice(),
@@ -511,28 +515,28 @@ fn link_basic_cpp() {
 
 #[test]
 fn cppio() {
-    check("cppio", "cpp", &[], 0, b"hello, awkvm\n");
+    check("iostream/cppio", "cpp", &[], 0, b"hello, awkvm\n");
 }
 
 #[test]
 fn cout_int() {
-    check("cout_int", "cpp", &[], 0, b"42");
+    check("iostream/cout_int", "cpp", &[], 0, b"42");
 }
 
 #[test]
 fn cout_char() {
-    check("cout_char", "cpp", &[], 0, b"A");
+    check("iostream/cout_char", "cpp", &[], 0, b"A");
 }
 
 #[test]
 fn cout_mixed() {
-    check("cout_mixed", "cpp", &[], 0, b"x = 5, pi = 3.14\n");
+    check("iostream/cout_mixed", "cpp", &[], 0, b"x = 5, pi = 3.14\n");
 }
 
 #[test]
 fn cout_overloads() {
     check(
-        "cout_overloads",
+        "iostream/cout_overloads",
         "cpp",
         &[],
         0,
@@ -543,7 +547,7 @@ fn cout_overloads() {
 #[test]
 fn cout_cerr() {
     check_streams(
-        "cout_cerr",
+        "iostream/cout_cerr",
         "cpp",
         &[],
         0,
@@ -554,7 +558,7 @@ fn cout_cerr() {
 
 #[test]
 fn cin_int() {
-    check_with_stdin("cin_int", "cpp", &[], b"3 5\n", 0, b"8\n");
+    check_with_stdin("iostream/cin_int", "cpp", &[], b"3 5\n", 0, b"8\n");
 }
 
 #[test]
@@ -564,7 +568,7 @@ fn cin_unsigned() {
     // wrap. unsigned long (64-bit) reads in the same value via the
     // 64-bit helper. Output uses cout's unsigned overload.
     check_with_stdin(
-        "cin_unsigned",
+        "iostream/cin_unsigned",
         "cpp",
         &[],
         b"4294967290 4294967290\n",
@@ -579,7 +583,7 @@ fn cin_mixed() {
     // representation reads it back exactly. 3.14 round-trips with
     // %g formatting.
     check_with_stdin(
-        "cin_mixed",
+        "iostream/cin_mixed",
         "cpp",
         &[],
         b"1234567890 3.14\n",
@@ -594,7 +598,7 @@ fn stats_cli() {
     // recognized iostream primitive (cin >> int, cout << with int /
     // long / double / cstr, cerr for error path).
     check_with_stdin(
-        "stats_cli",
+        "cli/stats_cli",
         "cpp",
         &[],
         b"5\n10 -3 7 0 8\n",
@@ -609,7 +613,7 @@ fn stats_cli_error() {
     // dispatch routes to /dev/stderr (verified by separate stderr
     // assertion below).
     check_full(
-        "stats_cli",
+        "cli/stats_cli",
         "cpp",
         &[],
         b"-1\n",
@@ -621,35 +625,35 @@ fn stats_cli_error() {
 
 #[test]
 fn stdany() {
-    check("stdany", "cpp", &[], 42, b"");
+    check("stdlib/stdany", "cpp", &[], 42, b"");
 }
 
 #[test]
 fn stdmin() {
-    check("stdmin", "cpp", &[], 3, b"");
+    check("stdlib/stdmin", "cpp", &[], 3, b"");
 }
 
 #[test]
 fn stdstr() {
-    check("stdstr", "cpp", &[], 12, b"");
+    check("stdlib/stdstr", "cpp", &[], 12, b"");
 }
 
 #[test]
 fn stdvec() {
-    check("stdvec", "cpp", &[], 10, b"");
+    check("stdlib/stdvec", "cpp", &[], 10, b"");
 }
 
 #[test]
 fn stdvecstr() {
-    check("stdvecstr", "cpp", &[], 10, b"");
+    check("stdlib/stdvecstr", "cpp", &[], 10, b"");
 }
 
 #[test]
 fn throw_class() {
-    check("throw_class", "cpp", &[], 42, b"");
+    check("exceptions/throw_class", "cpp", &[], 42, b"");
 }
 
 #[test]
 fn throw_int() {
-    check("throw_int", "cpp", &[], 42, b"");
+    check("exceptions/throw_int", "cpp", &[], 42, b"");
 }
