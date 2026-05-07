@@ -5,7 +5,7 @@ use llvm_ir::{Constant, ConstantRef, Module, Name, Type};
 // Walk the `@llvm.global.annotations` global and pull out
 // `__attribute__((annotate("..."))) ` strings keyed by the annotated
 // function's name. The full annotation text is returned verbatim;
-// callers filter by prefix (e.g. `awkvm_body:`, `awkvm_export`)
+// callers filter by prefix (e.g. `awkvm_fn`, `awkvm_export`)
 // themselves.
 //
 // Layout (per Itanium-ABI clang -O1):

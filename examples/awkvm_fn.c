@@ -1,4 +1,4 @@
-// Demonstrates `__attribute__((annotate("awkvm_body(args) { body }")))`.
+// Demonstrates `__attribute__((annotate("awkvm_fn(args) { body }")))`.
 // awkvm reads the annotation and emits the awk function body verbatim,
 // skipping IR translation entirely. The C-side type signature still
 // gates callers — both `clip(x, lo, hi)` from C and inline awk
@@ -21,7 +21,7 @@
 // Inputs come from argv so clang can't const-fold the `clip(...)`
 // calls — important for catching mistakes in the awk body.
 
-#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_body" body))) decl;
+#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_fn" body))) decl;
 
 #include <stdio.h>
 #include <stdlib.h>

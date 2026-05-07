@@ -317,7 +317,7 @@ awk output.
   function body, so you can't write `BEGIN { ... }`, `END { ... }`,
   pattern-action rules (`/regex/ { ... }`), or new top-level awk
   functions inside the asm string. The TODO items for whole-function
-  awk bodies (`__attribute__((annotate("awkvm_body:...")))`) and
+  awk bodies (`__attribute__((annotate("awkvm_fn(args) { ... }")))`) and
   `awkvm --link helpers.awk` cover those use cases.
 - **String marshaling is manual.** No automatic `const char*` →
   awk-string at the call boundary; you write `_cstr(%N)` /

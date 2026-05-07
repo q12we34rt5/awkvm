@@ -2,7 +2,7 @@
 
 Replace a C function's body with a hand-written awk body, while
 keeping the C type signature for callers. awkvm reads the
-`awkvm_body` annotation and emits the awk verbatim, skipping IR
+`awkvm_fn` annotation and emits the awk verbatim, skipping IR
 translation for that function.
 
 Use this when:
@@ -20,7 +20,7 @@ hand-written `.awk` library file, use
 ## Basic usage
 
 ```c
-#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_body" body))) decl;
+#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_fn" body))) decl;
 
 AWKVM_FN(
     int clip(int x, int lo, int hi),
@@ -49,7 +49,7 @@ awk reach the body.
 ## Annotation form
 
 ```
-awkvm_body(arg1, arg2, ...) { <awk body> }
+awkvm_fn(arg1, arg2, ...) { <awk body> }
 ```
 
 - The `(args)` list provides the awk function's parameter names.
@@ -67,7 +67,7 @@ awkvm_body(arg1, arg2, ...) { <awk body> }
 ## The `AWKVM_FN` macro
 
 ```c
-#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_body" body))) decl;
+#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_fn" body))) decl;
 ```
 
 Two arguments: the C declaration and the awk body string. The macro
@@ -171,7 +171,7 @@ instead of `clip`.
 
 ## See also
 
-- [`examples/awkvm_body.c`](../examples/awkvm_body.c) — fixture
+- [`examples/awkvm_fn.c`](../examples/awkvm_fn.c) — fixture
   exercised by `cargo test`. Uses argv inputs to stop clang from
   const-folding the `clip(...)` call.
 - [`docs/inline-awk.md`](inline-awk.md) — statement-level inline

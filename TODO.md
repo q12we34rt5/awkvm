@@ -35,9 +35,9 @@ v0.2.0 story.
   Note: clang rejects `extern "awk" {}` (verified — "unknown
   linkage language"), so we go via `annotate` instead.
 
-Inline awk, `--link helpers.awk`, and `awkvm_body` annotate landed
+Inline awk, `--link helpers.awk`, and `awkvm_fn` annotate landed
 (commits below). Remaining v0.2.0 work: AWK_EXPORT — builds on the
-same `@llvm.global.annotations` parsing that `awkvm_body` now uses.
+same `@llvm.global.annotations` parsing that `awkvm_fn` now uses.
 
 ## Todo (next, post-v0.2.0)
 
@@ -81,11 +81,14 @@ same `@llvm.global.annotations` parsing that `awkvm_body` now uses.
 
 ## Done (recent commits)
 
-- _(this commit)_ `awkvm_body` annotation — `__attribute__((annotate(
-  "awkvm_body(args):body")))` skips IR translation and emits the
+- _(prev commit)_ `awkvm_fn` annotation — `__attribute__((annotate(
+  "awkvm_fn(args) { body }")))` skips IR translation and emits the
   body verbatim. Annotation infra in `src/codegen/annotate.rs`
   reads `@llvm.global.annotations`; works on both full-body and
-  declare-only functions. `docs/awkvm-body.md` for the cookbook.
+  declare-only functions. `docs/awkvm-fn.md` for the cookbook.
+- _(this commit)_ Renamed `awkvm_body` → `awkvm_fn` end-to-end
+  (annotation key, fixture, doc, test) so the macro / file / key
+  all line up.
 - `a286ea5` link_basic_cpp fixture pinning the C++ extern "C" pattern
 - `6961814` link-awk doc: extern "C" requirement
 - `71c78d6` `awkvm --link helpers.awk` — concat a hand-written

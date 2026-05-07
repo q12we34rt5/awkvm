@@ -58,13 +58,13 @@ Ordered roughly by ratio of impact to effort.
 - **Whole-function awk bodies via `__attribute__((annotate))`.** ~half-day.
   Same surface area as inline awk but for entire function bodies. clang
   preserves `annotate` as `@llvm.global.annotations`; awkvm scans the array
-  for entries prefixed `awkvm_body:`, builds a `name -> awk_source` map,
+  for entries prefixed `awkvm_fn`, builds a `name -> awk_source` map,
   and in `emit_function` short-circuits the IR translation when the
   function name is in the map.
 
   ```c
   #ifdef __AWKVM__
-    #define AWK_FUNCTION(body) __attribute__((annotate("awkvm_body:" body)))
+    #define AWK_FUNCTION(body) __attribute__((annotate("awkvm_fn" body)))
   #else
     #define AWK_FUNCTION(body)
   #endif

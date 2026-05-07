@@ -72,24 +72,24 @@ pub fn emit(
         let _ = writeln!(out);
     }
 
-    // `__attribute__((annotate("awkvm_body(args):body")))` lets the
+    // `__attribute__((annotate("awkvm_fn(args) { body }")))` lets the
     // user supply the awk body for a function directly, bypassing IR
     // translation. The `(args)` list provides the awk parameter names
     // (clang -O1 strips C-source param names; explicit naming avoids
     // a silent mismatch where the body references variables that
     // don't exist in the emitted scope).
     let annotations = annotate::collect(module);
-    let awk_bodies: HashMap<&str, &str> = annotations
+    let awk_fns: HashMap<&str, &str> = annotations
         .iter()
         .filter_map(|(name, text)| {
-            text.strip_prefix("awkvm_body")
+            text.strip_prefix("awkvm_fn")
                 .map(|rest| (name.as_str(), rest))
         })
         .collect();
 
     for func in &module.functions {
-        if let Some(rest) = awk_bodies.get(func.name.as_str()) {
-            emit_awk_body_function(&mut out, &func.name, &func.parameters, rest)?;
+        if let Some(rest) = awk_fns.get(func.name.as_str()) {
+            emit_awk_fn(&mut out, &func.name, &func.parameters, rest)?;
         } else {
             func::emit_function(&mut out, func, &mut cx)?;
         }
@@ -160,11 +160,11 @@ pub fn emit(
         {
             continue;
         }
-        // `awkvm_body` annotation on a declare-only function: emit the
+        // `awkvm_fn` annotation on a declare-only function: emit the
         // body just like for full definitions. Lets users skip writing
         // a placeholder C body when they don't want to dual-build.
-        if let Some(rest) = awk_bodies.get(decl.name.as_str()) {
-            emit_awk_body_function(&mut out, &decl.name, &decl.parameters, rest)?;
+        if let Some(rest) = awk_fns.get(decl.name.as_str()) {
+            emit_awk_fn(&mut out, &decl.name, &decl.parameters, rest)?;
             continue;
         }
         let params: Vec<String> = decl
@@ -232,26 +232,24 @@ fn parse_libc_helpers(text: &str) -> Vec<(String, String)> {
 }
 
 // Emit a function whose body is supplied verbatim by an
-// `awkvm_body(args):body` annotation, instead of translated from the
-// IR. The signature still comes from the C declaration so type
+// `awkvm_fn(args) { body }` annotation, instead of translated from
+// the IR. The signature still comes from the C declaration so type
 // safety on the caller side is preserved; the awk parameter names
 // come from the `(args)` list so the body can refer to them by
 // the same names the C source uses.
 //
 // `rest` is what's left of the annotation after stripping the
-// `awkvm_body` prefix — either `(args):body` or `:body` for an
-// empty-arg function (parens optional but recommended even for 0
-// args, for symmetry).
-fn emit_awk_body_function(
+// `awkvm_fn` prefix — `(args) { body }`.
+fn emit_awk_fn(
     out: &mut String,
     fn_name: &str,
     parameters: &[Parameter],
     rest: &str,
 ) -> Result<()> {
-    let (names, body) = parse_awk_body_annotation(rest, fn_name)?;
+    let (names, body) = parse_awk_fn_annotation(rest, fn_name)?;
     if names.len() != parameters.len() {
         bail!(
-            "awkvm_body annotation for `{fn_name}` declares {} parameter \
+            "awkvm_fn annotation for `{fn_name}` declares {} parameter \
              name(s) but the C function has {}",
             names.len(),
             parameters.len()
@@ -272,21 +270,21 @@ fn emit_awk_body_function(
     Ok(())
 }
 
-// Parse the body portion of an `awkvm_body(args) { body }` annotation.
-// `text` is what's left after the `awkvm_body` prefix.
-fn parse_awk_body_annotation<'a>(
+// Parse the body portion of an `awkvm_fn(args) { body }` annotation.
+// `text` is what's left after the `awkvm_fn` prefix.
+fn parse_awk_fn_annotation<'a>(
     text: &'a str,
     fn_name: &str,
 ) -> Result<(Vec<&'a str>, &'a str)> {
     let after_paren = text.strip_prefix('(').ok_or_else(|| {
         anyhow!(
-            "awkvm_body annotation for `{fn_name}` should look like \
-             `awkvm_body(args) {{body}}`, got `awkvm_body{text}`"
+            "awkvm_fn annotation for `{fn_name}` should look like \
+             `awkvm_fn(args) {{body}}`, got `awkvm_fn{text}`"
         )
     })?;
     let close = after_paren
         .find(')')
-        .ok_or_else(|| anyhow!("awkvm_body annotation for `{fn_name}` has unmatched `(`"))?;
+        .ok_or_else(|| anyhow!("awkvm_fn annotation for `{fn_name}` has unmatched `(`"))?;
     let names: Vec<&str> = after_paren[..close]
         .split(',')
         .map(|s| s.trim())
@@ -295,14 +293,14 @@ fn parse_awk_body_annotation<'a>(
     let after_args = after_paren[close + 1..].trim_start();
     let after_brace = after_args.strip_prefix('{').ok_or_else(|| {
         anyhow!(
-            "awkvm_body annotation for `{fn_name}` is missing `{{` between \
+            "awkvm_fn annotation for `{fn_name}` is missing `{{` between \
              the parameter list and the body"
         )
     })?;
     let trimmed = after_brace.trim_end();
     let body = trimmed.strip_suffix('}').ok_or_else(|| {
         anyhow!(
-            "awkvm_body annotation for `{fn_name}` is missing closing `}}`"
+            "awkvm_fn annotation for `{fn_name}` is missing closing `}}`"
         )
     })?;
     Ok((names, body))

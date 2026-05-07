@@ -43,8 +43,8 @@ for release notes.
 - [`docs/link-awk.md`](docs/link-awk.md) — `awkvm --link helpers.awk`
   pulls a hand-written awk file into the emitted script; functions
   defined as `fn_<name>` become callable from C-side `extern` decls.
-- [`docs/awkvm-body.md`](docs/awkvm-body.md) —
-  `__attribute__((annotate("awkvm_body(args):body")))` lets a C
+- [`docs/awkvm-fn.md`](docs/awkvm-fn.md) —
+  `__attribute__((annotate("awkvm_fn(args) { body }")))` lets a C
   function carry its awk implementation in the annotation; awkvm
   uses the annotation as the body and skips IR translation.
 
