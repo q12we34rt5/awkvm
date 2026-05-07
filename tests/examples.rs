@@ -291,6 +291,35 @@ fn inline_awk() {
     check("inline_awk", "c", &[], 0, b"sq=49 r=17\n");
 }
 
+#[test]
+fn inline_awk_str() {
+    // C string → awk string → toupper → back to C string. Exercises
+    // _cstr (MEM→awk) and _str_to_mem (awk→MEM) marshaling helpers
+    // through a single inline-awk site.
+    check("inline_awk_str", "c", &[], 0, b"HELLO, WORLD\n");
+}
+
+#[test]
+fn inline_awk_pipe() {
+    // `cmd | getline line; close(cmd)` — subprocess stdout captured
+    // into an awk variable, then handed back to C as a char*.
+    // Uses `printf hello` (no trailing newline) for deterministic output.
+    check(
+        "inline_awk_pipe",
+        "c",
+        &[],
+        0,
+        b"subprocess said: hello\n",
+    );
+}
+
+#[test]
+fn inline_awk_regex() {
+    // gawk regex (`gsub`) reachable through inline awk. C string in,
+    // C string out via the same _cstr / _str_to_mem marshal pair.
+    check("inline_awk_regex", "c", &[], 0, b"hell0 w0rld\n");
+}
+
 // --- C++ fixtures -------------------------------------------------------
 
 #[test]

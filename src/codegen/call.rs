@@ -126,9 +126,15 @@ fn emit_inline_awk(
         .map(|(op, _)| operand_str(op))
         .collect();
 
-    // Substitute $N descending so $10 is replaced before $1 etc.
+    // `$$` in the IR asm template is the LLVM-mangled escape for a
+    // literal `$` — it stops `$N` operand recognition. Stash those
+    // as a sentinel, do the `$N` substitution against the rest,
+    // then bring the sentinel back as `$`. NUL is safe because gawk
+    // never has it in source.
+    let mut substituted = body.replace("$$", "\0");
+
+    // Descending so `$10` is replaced before `$1` etc.
     let total = n_outputs + inputs.len();
-    let mut substituted = body.to_string();
     for i in (0..total).rev() {
         let placeholder = format!("${i}");
         let replacement = if i < n_outputs {
@@ -138,6 +144,7 @@ fn emit_inline_awk(
         };
         substituted = substituted.replace(&placeholder, &replacement);
     }
+    substituted = substituted.replace('\0', "$");
 
     for line in substituted.lines() {
         let _ = writeln!(out, "{indent}{line}");

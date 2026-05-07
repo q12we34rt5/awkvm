@@ -89,12 +89,46 @@ fn scan_inline_asm(text: &str) -> Vec<(String, String)> {
         }
         let Some(rest1) = rest.strip_prefix('"') else { continue };
         let Some(end_a) = rest1.find('"') else { continue };
-        let asm_str = &rest1[..end_a];
+        let asm_str = unescape_ir_hex(&rest1[..end_a]);
         let after = rest1[end_a + 1..].trim_start_matches(|c: char| c == ',' || c.is_whitespace());
         let Some(rest2) = after.strip_prefix('"') else { continue };
         let Some(end_c) = rest2.find('"') else { continue };
-        let constraints = &rest2[..end_c];
-        out.push((asm_str.to_string(), constraints.to_string()));
+        let constraints = unescape_ir_hex(&rest2[..end_c]);
+        out.push((asm_str, constraints));
+    }
+    out
+}
+
+// LLVM's IR text printer represents `\` and other non-printable bytes
+// inside asm template strings two ways: `\\` for a literal backslash,
+// and `\HH` (two-hex-digit) for everything else (including `"` as
+// `\22`). Reverse both so the asm body we hand to codegen is the real
+// character sequence the user wrote in C.
+fn unescape_ir_hex(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+            out.push('\\');
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'\\' && i + 2 < bytes.len() {
+            let to_hex = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(hi), Some(lo)) = (to_hex(bytes[i + 1]), to_hex(bytes[i + 2])) {
+                out.push((hi * 16 + lo) as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
     }
     out
 }

@@ -96,7 +96,11 @@ annotations work) and `--link` (independent — can slot anywhere).
 
 ## Done (recent commits)
 
-- _(this commit)_ Inline awk via `__asm__("AWKVM:...")`: parser
+- _(this commit)_ Inline awk asm escape unescaping (`\\` for backslash,
+  `\HH` for hex, `$$` for literal `$`); `_str_to_mem` runtime helper
+  closes the awk-string → C-string marshal direction; three new
+  fixtures cover string round-trip, subprocess capture, and gawk regex
+- `0103432` Inline awk via `__asm__("AWKVM:...")`: parser
   recovers asm/constraints from `.ll` text (LLVM C API hides them),
   codegen substitutes `%N` placeholders and emits raw awk
 - `c2ce31e` README refresh: quick example, toolchain warning,
