@@ -58,7 +58,7 @@ PROBE void awkvm_probe_ostream_voidptr(std::ostream& os, const void* p) {
 // through the `:=` sigil so they end up in STREAM_GLOBALS instead of
 // PROBE_MAP. Codegen consults STREAM_GLOBALS in emit_globals_init to
 // register the stream's output target in the awk runtime's
-// _OSTREAM_DEST table.
+// _STREAM_DEST table.
 PROBE std::ostream* awkvm_probe_ostream_cerr() {
     return &std::cerr;
 }

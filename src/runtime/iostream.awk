@@ -6,51 +6,30 @@
 # probes/src/*.cpp to look up the mangled names against the user's
 # actual toolchain so the binding stays correct as libc++ versions
 # shift.
-
-# Resolve the gawk output target for an ostream instance.
 #
-# _OSTREAM_DEST is populated at codegen time in emit_globals_init's
-# BEGIN block: for every external global whose mangled name matches
-# an entry in build.rs's STREAM_GLOBALS table (cerr / clog today), a
-# `_OSTREAM_DEST[g__<sanitized>] = "<target>"` line is emitted. cout
-# and any other unrecognized stream are absent from the table and
-# default to "" (gawk's stdout) via the fallback below.
-#
-# Future shape: when sstream / fstream / rdbuf swap land (E4 / E5),
-# this becomes a two-level lookup — `ostream addr → streambuf id →
-# target` — with the second table populated by ofstream /
-# stringstream constructor probes. Keeping every _ostream_<type>
-# routed through this one helper so that change is a single-file
-# edit.
-function _ostream_dest(stream) {
-    return (stream in _OSTREAM_DEST) ? _OSTREAM_DEST[stream] : ""
-}
+# The address-keyed `_STREAM_*` tables (DEST / SRC / BUF / POS / EOF)
+# live in stream.awk; this file is the iostream API surface that sits
+# on top of them via `_stream_read_line` / `_stream_write_byte` /
+# `_stream_write_str`. The libc FILE* bridge will share the same
+# tables, so the stream registry is a single source of truth.
 
-function _ostream_int(stream, val,    d) {
-    d = _ostream_dest(stream)
-    if (d == "") printf "%d", val
-    else         printf "%d", val > d
+function _ostream_int(stream, val) {
+    _stream_write_str(stream, sprintf("%d", val))
     return stream
 }
 
 # `cout << "literal"` lowers to libc++'s __put_character_sequence, which
 # takes the byte address and a precomputed length (so no NUL scan needed).
-function _ostream_cstr(stream, addr, len,    d, i) {
-    d = _ostream_dest(stream)
-    for (i = 0; i < len; i++) {
-        if (d == "") printf "%c", MEM[addr + i]
-        else         printf "%c", MEM[addr + i] > d
-    }
+function _ostream_cstr(stream, addr, len,    i) {
+    for (i = 0; i < len; i++) _stream_write_byte(stream, MEM[addr + i])
     return stream
 }
 
 # C++ default formatting for double: 6 significant digits. gawk's %g
 # matches that out of the box; precision will need a setprecision()
 # manipulator path later.
-function _ostream_double(stream, val,    d) {
-    d = _ostream_dest(stream)
-    if (d == "") printf "%g", val
-    else         printf "%g", val > d
+function _ostream_double(stream, val) {
+    _stream_write_str(stream, sprintf("%g", val))
     return stream
 }
 
@@ -58,11 +37,9 @@ function _ostream_double(stream, val,    d) {
 # (val < 0 means the high bit was set) before formatting. `bits`
 # distinguishes uint (32) from ulong (64). For ulong > 2^53 awk's
 # double precision rounds — documented in LIMITATIONS.md.
-function _ostream_unsigned(stream, val, bits,    d, u) {
+function _ostream_unsigned(stream, val, bits,    u) {
     u = (val < 0) ? val + 2 ^ bits : val
-    d = _ostream_dest(stream)
-    if (d == "") printf "%d", u
-    else         printf "%d", u > d
+    _stream_write_str(stream, sprintf("%d", u))
     return stream
 }
 
@@ -70,11 +47,9 @@ function _ostream_unsigned(stream, val, bits,    d, u) {
 # (libc++ default; libstdc++ may differ). Pointer values in our model
 # are byte addresses, all non-negative under normal use; the zext
 # guards against pointer-as-i64 with the high bit set.
-function _ostream_voidptr(stream, val,    d, u) {
+function _ostream_voidptr(stream, val,    u) {
     u = (val < 0) ? val + 2 ^ 64 : val
-    d = _ostream_dest(stream)
-    if (d == "") printf "0x%x", u
-    else         printf "0x%x", u > d
+    _stream_write_str(stream, sprintf("0x%x", u))
     return stream
 }
 
@@ -85,50 +60,45 @@ function _ostream_voidptr(stream, val,    d, u) {
 # C++ `cin >> x` is token-oriented (skip leading whitespace, read up
 # to the next whitespace, leave trailing whitespace for the next
 # read). gawk's `getline` is line-oriented, so we maintain a
-# per-stream line buffer + cursor (`_ISTREAM_BUF` / `_ISTREAM_POS`)
-# and refill from the source registered in `_ISTREAM_SRC[stream]`.
-# That table is populated by emit_globals_init for cin (today) and
-# will be extended for fstream / istringstream in E4 / E5.
+# per-stream line buffer + cursor (`_STREAM_BUF` / `_STREAM_POS`) and
+# refill from the source registered in `_STREAM_SRC[stream]`. The
+# stream tables are populated by emit_globals_init for cin (today)
+# and will be extended for fstream / istringstream later.
 
 # Skip whitespace at the current cursor, refilling from the stream's
 # source when the buffer is exhausted. Returns 1 if a non-ws char is
 # now under the cursor, 0 if EOF / unknown stream.
-function _istream_skip_ws(stream,    buf, pos, line, c, src) {
-    src = _ISTREAM_SRC[stream]
-    if (src == "") {
-        _ISTREAM_EOF[stream] = 1
+function _istream_skip_ws(stream,    buf, pos, c) {
+    if (_STREAM_SRC[stream] == "") {
+        _STREAM_EOF[stream] = 1
         return 0
     }
     while (1) {
-        buf = _ISTREAM_BUF[stream]
-        pos = _ISTREAM_POS[stream]
+        buf = _STREAM_BUF[stream]
+        pos = _STREAM_POS[stream]
         if (pos == 0) pos = 1   # awk substr is 1-indexed
         while (pos > length(buf)) {
-            if ((getline line < src) <= 0) {
-                _ISTREAM_EOF[stream] = 1
-                _ISTREAM_BUF[stream] = buf
-                _ISTREAM_POS[stream] = pos
+            if (!_stream_read_line(stream)) {
+                _STREAM_POS[stream] = pos
                 return 0
             }
-            buf = buf line "\n"
+            buf = _STREAM_BUF[stream]
         }
         c = substr(buf, pos, 1)
         if (c != " " && c != "\t" && c != "\n") {
-            _ISTREAM_BUF[stream] = buf
-            _ISTREAM_POS[stream] = pos
+            _STREAM_POS[stream] = pos
             return 1
         }
         pos++
-        _ISTREAM_BUF[stream] = buf
-        _ISTREAM_POS[stream] = pos
+        _STREAM_POS[stream] = pos
     }
 }
 
 # Read one whitespace-delimited token. Returns "" on EOF.
 function _istream_read_token(stream,    buf, pos, c, tok) {
     if (!_istream_skip_ws(stream)) return ""
-    buf = _ISTREAM_BUF[stream]
-    pos = _ISTREAM_POS[stream]
+    buf = _STREAM_BUF[stream]
+    pos = _STREAM_POS[stream]
     tok = ""
     while (pos <= length(buf)) {
         c = substr(buf, pos, 1)
@@ -136,7 +106,7 @@ function _istream_read_token(stream,    buf, pos, c, tok) {
         tok = tok c
         pos++
     }
-    _ISTREAM_POS[stream] = pos
+    _STREAM_POS[stream] = pos
     return tok
 }
 

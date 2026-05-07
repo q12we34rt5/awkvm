@@ -118,10 +118,13 @@ pub(super) fn emit_globals_init(
     // Stream registry. STREAM_GLOBALS maps recognized libc++ global
     // names (cerr, clog, cin, ...) to `<table>=<value>` metadata that
     // selects which awk runtime table the address gets registered in:
-    //   dest=...  → _OSTREAM_DEST  (consulted by _ostream_dest)
-    //   src=...   → _ISTREAM_SRC   (consulted by _istream_skip_ws)
+    //   dest=...  → _STREAM_DEST  (consumed by _stream_write_*)
+    //   src=...   → _STREAM_SRC   (consumed by _stream_read_line)
     // cout is intentionally absent (defaults to stdout via absent-key
-    // path); same for any unrecognized ostream subclass.
+    // path); same for any unrecognized ostream subclass. The same
+    // tables back the libc FILE* bridge — fopen / popen populate
+    // them at runtime instead of codegen-time, but the consumer
+    // helpers in stream.awk are the same.
     for gv in &module.global_vars {
         let Name::Name(name) = &gv.name else { continue };
         let Some((_, meta)) = STREAM_GLOBALS.iter().find(|(m, _)| *m == name.as_str())
@@ -130,9 +133,9 @@ pub(super) fn emit_globals_init(
         };
         let var = global_to_var(&gv.name);
         if let Some(target) = meta.strip_prefix("dest=") {
-            let _ = writeln!(out, "    _OSTREAM_DEST[{var}] = \"{target}\"");
+            let _ = writeln!(out, "    _STREAM_DEST[{var}] = \"{target}\"");
         } else if let Some(source) = meta.strip_prefix("src=") {
-            let _ = writeln!(out, "    _ISTREAM_SRC[{var}] = \"{source}\"");
+            let _ = writeln!(out, "    _STREAM_SRC[{var}] = \"{source}\"");
         } else {
             bail!(
                 "STREAM_GLOBALS metadata `{meta}` for `{name}` must start with \

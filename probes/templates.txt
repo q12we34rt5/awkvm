@@ -12,8 +12,8 @@
 #   :=  global-symbol metadata. Body is `<table>=<value>` and codegen
 #       at emit_globals_init time populates the named awk table with
 #       the value at the global's allocated address. Recognized tables:
-#         dest=...   register output target in _OSTREAM_DEST
-#         src=...    register input source in _ISTREAM_SRC
+#         dest=...   register output target in _STREAM_DEST
+#         src=...    register input source in _STREAM_SRC
 #
 # The probe_id (the suffix on `awkvm_probe_<id>` in probes/src/*.cpp)
 # must match for build.rs to pair the captured mangled name with the
@@ -42,7 +42,7 @@ ostream_ulong   => _ostream_unsigned(arg0, arg1, 64)
 ostream_voidptr => _ostream_voidptr(arg0, arg1)
 
 # ostream / istream globals. cout stays implicit (anything not in
-# _OSTREAM_DEST defaults to stdout). cin currently is the only istream
+# _STREAM_DEST defaults to stdout). cin currently is the only istream
 # we recognize; sstream / fstream additions go through the same table.
 ostream_cerr    := dest=/dev/stderr
 ostream_clog    := dest=/dev/stderr
