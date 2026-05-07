@@ -23,6 +23,11 @@ ostream_int     => _ostream_int(arg0, arg1)
 ostream_cstr    => _ostream_cstr(arg0, arg1, arg2)
 ostream_double  => _ostream_double(arg0, arg1)
 
+# `<< float` shares the formatting engine with double: gawk's %g
+# applies, single precision quirks (subnormals, off-by-1-LSB) are
+# inherited from awkvm's float-as-double model.
+ostream_float   => _ostream_double(arg0, arg1)
+
 # `long` prints like signed int (printf "%d" works as-is).
 ostream_long    => _ostream_int(arg0, arg1)
 

@@ -29,6 +29,10 @@ PROBE void awkvm_probe_ostream_double(std::ostream& os, double d) {
     os << d;
 }
 
+PROBE void awkvm_probe_ostream_float(std::ostream& os, float f) {
+    os << f;
+}
+
 PROBE void awkvm_probe_ostream_long(std::ostream& os, long n) {
     os << n;
 }
