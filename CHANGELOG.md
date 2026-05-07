@@ -1,5 +1,94 @@
 # Changelog
 
+## [0.2.0] — 2026-05-07
+
+Theme: **C ↔ awk FFI**. Four pieces ship together to make awkvm
+bidirectional — C code can drop into raw awk where useful, and
+external awk scripts can call into compiled C.
+
+### Added — FFI surface
+
+- **Inline awk via `__asm__("AWKVM:...")`** ([docs/inline-awk.md](docs/inline-awk.md)).
+  Statement-level awk inside an otherwise IR-translated function.
+  Reaches gawk's full surface (regex, subprocess pipes, file I/O,
+  coprocess, `getline`, time built-ins, ...) without per-feature
+  stubs. Parser recovers asm + constraints from `.ll` text since
+  the LLVM C API doesn't expose them; codegen substitutes `%N`
+  operand placeholders. Escape unescaping handles `\\` for
+  backslash, `\HH` for hex, and `$$` for literal `$`. Companion
+  runtime helper `_str_to_mem` closes the awk-string → C-string
+  marshal direction.
+- **`awkvm --link helpers.awk`** ([docs/link-awk.md](docs/link-awk.md)).
+  Concatenate one or more hand-written awk files into the emitted
+  script. Functions defined as `function fn_<name>(...)` become
+  callable from C-side `extern <T> <name>(...)` declarations and
+  from inline awk via the same `fn_<name>`. The `--link` flag is
+  repeatable. Declare-only stubs are suppressed for any name that
+  the linked awk provides, so the user-supplied implementation
+  isn't shadowed by an empty default.
+- **`awkvm_fn` body annotation** ([docs/awkvm-fn.md](docs/awkvm-fn.md)).
+  `__attribute__((annotate("awkvm_fn(args) { body }")))` lets a C
+  function carry its awk implementation in the annotation; awkvm
+  uses the annotation as the body and skips IR translation. The
+  `(args)` rename list maps awk parameters to readable names
+  (clang -O1 strips C-source param names from the IR). Pair with
+  the `AWKVM_FN(decl, body)` two-arg macro for declarations that
+  read like awk function definitions transposed onto C source.
+  Body lines get dedented and blank-line-trimmed before emission.
+  Annotation infrastructure (`src/codegen/annotate.rs`) walks
+  `@llvm.global.annotations` and is shared with `awkvm_export`.
+- **`awkvm_export` + `--library`** ([docs/awkvm-export.md](docs/awkvm-export.md)).
+  The inverse direction: `__attribute__((annotate("awkvm_export")))`
+  on a C function plus `awkvm --library` produces a gawk-loadable
+  library that an external awk script can call into via the bare
+  C name. Caller pattern: `gawk -f lib.awk -f script.awk`. v0.2.0
+  ABI is primitive-only (int / long / unsigned / double / bool /
+  char / void); pointer / struct support deferred to a follow-up
+  marshaling layer. Multiple awkvm-generated libraries can't be
+  combined downstream — use `llvm-link` to merge `.bc` files
+  before invoking awkvm. Type checker bails at codegen time on
+  non-primitive signatures with a clear error message.
+
+### Added — tests
+
+`cargo test` now runs 37 end-to-end fixtures (was 29) plus 5
+runtime unit-test bundles. New FFI-focused fixtures:
+
+- `inline_awk` — `%N` operand substitution and constraint parsing
+- `inline_awk_str` — C-string → awk-string round-trip via `_cstr` /
+  `_str_to_mem`
+- `inline_awk_pipe` — subprocess capture (`cmd | getline`)
+- `inline_awk_regex` — gawk regex (`gsub`) reachable from C
+- `link_basic` — C-side `extern int clip(...)` resolved via linked
+  awk
+- `link_basic_cpp` — same with `extern "C"` wrapping
+- `awkvm_fn` — annotation-driven body with multi-line awk source
+- `awkvm_export` — bare-name wrappers exposed to a hand-written
+  caller awk
+
+### Documentation
+
+`docs/` directory introduced; per-feature recipes for each FFI
+surface area. README "Feature guides" section indexes them.
+LIMITATIONS.md gains an FFI section pinning the multi-library
+restriction and the primitive-only export ABI.
+
+### Known issues filed for follow-up
+
+- **i32 mul wraparound.** clang -O1 occasionally closed-forms a
+  loop into a polynomial like `r14 = r13 * 1431655766` (reciprocal
+  of 3, scaled to 2^32) where the i32 result is the low 32 bits
+  of the product. awkvm currently doesn't truncate the multiply,
+  so the intermediate overflows the i32 lane and downstream
+  arithmetic explodes. Surfaced while building the
+  `awkvm_export.c` fixture. Filed under `[codegen]` in TODO.
+
+### Compatibility
+
+No breaking changes to v0.1.0 IR translation behavior. New CLI
+flags (`--link`, `--library`) are additive; default invocation
+(`awkvm input.bc -o out.awk`) is unchanged.
+
 ## [0.1.0] — 2026-05-07
 
 First tagged release. Compiles a meaningful subset of C / C++ to gawk.

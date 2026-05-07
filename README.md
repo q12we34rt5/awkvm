@@ -60,7 +60,7 @@ LLVM 19 + gawk are required. On macOS (Apple Silicon):
 ```sh
 brew install llvm@19 gawk
 cargo build
-cargo test    # 29 end-to-end fixtures + 5 awk-runtime unit-test bundles
+cargo test    # 37 end-to-end fixtures + 5 awk-runtime unit-test bundles
 ```
 
 `.cargo/config.toml` points `llvm-sys` at `/opt/homebrew/opt/llvm@19`.
