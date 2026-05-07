@@ -52,6 +52,13 @@ for release notes.
   to outside awk callers under bare names. Call into the compiled
   library with `gawk -f lib.awk -f script.awk`. v0.2.0 export ABI
   is primitive-only (int / long / double / bool / char / void).
+- [`docs/io.md`](docs/io.md) — file and stream I/O. v0.3.0
+  unifies libc `FILE*` and C++ `<fstream>` on the same
+  address-keyed stream subsystem. `fopen` / `fwrite` / `fread`
+  / `system` / `popen` on the libc side; `ofstream` / `ifstream`
+  with `<<` / `>>` / `read` / `write` / `gcount` on the C++
+  side. Notes the `rdbuf`-swap limitation and what's deferred to
+  v0.4.0 iostream completion.
 
 ## Build
 
