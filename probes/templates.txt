@@ -41,6 +41,14 @@ ostream_ulong   => _ostream_unsigned(arg0, arg1, 64)
 # void* is zext-then-hex with the libc++ "0x" prefix.
 ostream_voidptr => _ostream_voidptr(arg0, arg1)
 
+# os.write(buf, n) — block write of n bytes, no formatting. Body is
+# identical to ostream_cstr (libc++'s `<< "literal"` path lowers to
+# the same byte-loop primitive); reuse the same helper.
+ostream_write   => _ostream_cstr(arg0, arg1, arg2)
+
+# os.put(c) — write one byte, return the ostream for chaining.
+ostream_put     => _ostream_put(arg0, arg1)
+
 # ostream / istream globals. cout stays implicit (anything not in
 # _STREAM_DEST defaults to stdout). cin currently is the only istream
 # we recognize; sstream / fstream additions go through the same table.
@@ -63,6 +71,16 @@ istream_ulong   => _istream_unsigned(arg0, arg1, 64)
 # cin >> double. Same token-read flow, but the destination is an
 # 8-byte IEEE 754 slot, so the helper goes through `_store_f64`.
 istream_double  => _istream_double(arg0, arg1)
+
+# is.read(buf, n) — block read of up to n bytes. Stores the actual
+# count at MEM[stream+8] so the call-site-inlined `is.gcount()`
+# (clang -O1 collapses it to a straight load from that offset)
+# returns the right value.
+istream_read    => _istream_read(arg0, arg1, arg2)
+
+# is.get() — read one byte, return -1 on EOF. Same gcount-via-MEM
+# convention as read.
+istream_get     => _istream_get(arg0)
 
 # std::ofstream / std::ifstream constructor — register the file as a
 # write / read stream against the ofstream/ifstream's `this` pointer

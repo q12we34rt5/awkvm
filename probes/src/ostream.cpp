@@ -52,6 +52,18 @@ PROBE void awkvm_probe_ostream_voidptr(std::ostream& os, const void* p) {
     os << p;
 }
 
+// Block / single-char unformatted output. `os.write(buf, n)` is the
+// counterpart of fwrite — emit n bytes verbatim with no formatting.
+// `os.put(c)` writes one byte. Both return the ostream so chained
+// `os.write(...).put(...)` works.
+PROBE void awkvm_probe_ostream_write(std::ostream& os, const char* p, long n) {
+    os.write(p, n);
+}
+
+PROBE void awkvm_probe_ostream_put(std::ostream& os, char c) {
+    os.put(c);
+}
+
 // Global-symbol probes. Different shape from the call probes above:
 // the body's first @_Z* reference is a global *load* (or ret with a
 // global address), not a call. build.rs uses the same parser to

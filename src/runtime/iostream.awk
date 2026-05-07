@@ -69,6 +69,14 @@ function _ostream_voidptr(stream, val,    u) {
     return stream
 }
 
+# os.put(c) — write a single byte and return the stream so callers
+# can chain. `c` is an int (the char's code) per the libc++ probe
+# signature; `_stream_write_byte` does the locale-aware printf.
+function _ostream_put(stream, c) {
+    _stream_write_byte(stream, c)
+    return stream
+}
+
 # ============================================================
 # istream / cin
 # ============================================================
@@ -143,6 +151,31 @@ function _istream_double(stream, dest,    tok) {
     tok = _istream_read_token(stream)
     _store_f64(dest, tok + 0)
     return stream
+}
+
+# is.read(buf, n) — block read up to n bytes from the stream into
+# MEM[buf..buf+i-1]. Stops early on EOF. Returns the stream so
+# chained reads work; the actual count is stored at MEM[stream+8]
+# (libc++'s gcount_ field offset) so the call-site-inlined
+# `is.gcount()` reads the right value — see probe comment in
+# probes/src/istream.cpp for why gcount itself isn't probed.
+function _istream_read(stream, buf, n,    i, b) {
+    for (i = 0; i < n; i++) {
+        b = _stream_read_byte(stream)
+        if (b < 0) break
+        MEM[buf + i] = b
+    }
+    _store(stream + 8, i, 64)
+    return stream
+}
+
+# is.get() — read one byte; returns the byte code or -1 on EOF.
+# Same gcount-via-MEM convention as _istream_read: store 1 (or 0
+# on EOF) at MEM[stream+8].
+function _istream_get(stream,    b) {
+    b = _stream_read_byte(stream)
+    _store(stream + 8, (b < 0) ? 0 : 1, 64)
+    return b
 }
 
 # `cin >> unsigned_var` — token-read, awk parses the leading numeric

@@ -378,6 +378,32 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn block_io() {
+    // ofstream::write + put → ifstream::read + gcount + get(EOF).
+    // Round-trips 12 bytes via block I/O. gcount() is the inlined
+    // load from MEM[istream+8] — `_istream_read` writes the count
+    // there before returning.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("block.bin");
+    let path_str = path.to_str().expect("path utf8");
+    let out = run_fixture("io/block_io", "cpp", &[path_str]);
+    let expected = b"read 12 bytes:\nhello\nworld\nget-at-eof: -1\n";
+    assert_eq!(out.exit, 0, "[block_io] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[block_io] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[block_io] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn ifstream_extract() {
     // ofstream writes three primitives space-separated; ifstream
     // reads them back via `>>`. Proves ifstream's extraction path
