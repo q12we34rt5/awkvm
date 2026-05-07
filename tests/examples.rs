@@ -343,6 +343,22 @@ fn link_basic() {
     assert_eq!(out.stderr.as_slice(), b"");
 }
 
+#[test]
+fn link_basic_cpp() {
+    // Same fixture compiled as C++. Pins the `extern "C"` requirement
+    // documented in docs/link-awk.md — without that wrap clang++
+    // mangles `clip` to `_Z4clipiii` and the linked `fn_clip` doesn't
+    // match, so this test would print "0 0 0". Shares the same helper
+    // .awk file as link_basic.
+    let out = run_fixture_full("link_basic_cpp", "cpp", &[], b"", &["link_basic.awk"]);
+    assert_eq!(out.exit, 0);
+    assert_eq!(
+        out.stdout.as_slice(),
+        b"clip(  5,  0, 10) = 5\nclip( -3,  0, 10) = 0\nclip( 20,  0, 10) = 10\n"
+    );
+    assert_eq!(out.stderr.as_slice(), b"");
+}
+
 // --- C++ fixtures -------------------------------------------------------
 
 #[test]
