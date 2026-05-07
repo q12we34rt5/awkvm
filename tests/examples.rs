@@ -331,6 +331,23 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn awkvm_body() {
+    // `__attribute__((annotate("awkvm_body(args):body")))` — awkvm
+    // emits the annotation's awk body in place of IR translation.
+    // Inputs come from argv so clang can't const-fold the clip()
+    // calls — that's the catch the previous version of this test
+    // missed (it passed by accident even when fn_clip referenced
+    // undefined awk variables, because the body was never reached).
+    check(
+        "awkvm_body",
+        "c",
+        &["0", "10", "-3", "5", "20"],
+        0,
+        b"clip(-3) = 0\nclip(5) = 5\nclip(20) = 10\n",
+    );
+}
+
+#[test]
 fn link_basic() {
     // `--link link_basic.awk` provides a `fn_clip` definition; the C
     // side declares `extern int clip(...)` and calls it directly.

@@ -17,13 +17,6 @@ to raw awk where useful, and awk scripts can call into compiled C.
 Each item below is independently small; together they form the
 v0.2.0 story.
 
-- **[ffi]** Whole-function awk bodies via
-  `__attribute__((annotate("awkvm_body:...")))`. ~half-day. Same
-  plumbing as the next item; scan `@llvm.global.annotations`,
-  build a `name → awk source` map, short-circuit `emit_function`
-  for matched names. Useful when "this whole function is awk
-  plumbing with a C type signature".
-
 - **[ffi]** `AWK_EXPORT` — awk-callable C library mode (~2-3 days,
   conceived 2026-05-07). `__attribute__((annotate("awkvm_export")))`
   marks a C function as exported. awkvm:
@@ -42,10 +35,9 @@ v0.2.0 story.
   Note: clang rejects `extern "awk" {}` (verified — "unknown
   linkage language"), so we go via `annotate` instead.
 
-Inline awk and `--link helpers.awk` landed (commits below). Remaining
-v0.2.0 sequence: AWK_EXPORT next (annotation infra carries forward
-to the body-annotation item), then `awkvm_body` (cheap once
-annotations work).
+Inline awk, `--link helpers.awk`, and `awkvm_body` annotate landed
+(commits below). Remaining v0.2.0 work: AWK_EXPORT — builds on the
+same `@llvm.global.annotations` parsing that `awkvm_body` now uses.
 
 ## Todo (next, post-v0.2.0)
 
@@ -89,7 +81,14 @@ annotations work).
 
 ## Done (recent commits)
 
-- _(this commit)_ `awkvm --link helpers.awk` — concat a hand-written
+- _(this commit)_ `awkvm_body` annotation — `__attribute__((annotate(
+  "awkvm_body(args):body")))` skips IR translation and emits the
+  body verbatim. Annotation infra in `src/codegen/annotate.rs`
+  reads `@llvm.global.annotations`; works on both full-body and
+  declare-only functions. `docs/awkvm-body.md` for the cookbook.
+- `a286ea5` link_basic_cpp fixture pinning the C++ extern "C" pattern
+- `6961814` link-awk doc: extern "C" requirement
+- `71c78d6` `awkvm --link helpers.awk` — concat a hand-written
   awk file into the emitted script; `function fn_<name>(...)` entries
   become callable from C-side `extern` declarations. `docs/link-awk.md`
   documents the convention.

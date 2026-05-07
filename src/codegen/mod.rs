@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use anyhow::{Result, bail};
-use llvm_ir::Module;
+use anyhow::{Result, anyhow, bail};
+use llvm_ir::{Module, function::Parameter};
 
 use crate::runtime::{LIBC, RUNTIME};
 
+mod annotate;
 mod call;
 mod func;
 mod globals;
@@ -71,8 +72,27 @@ pub fn emit(
         let _ = writeln!(out);
     }
 
+    // `__attribute__((annotate("awkvm_body(args):body")))` lets the
+    // user supply the awk body for a function directly, bypassing IR
+    // translation. The `(args)` list provides the awk parameter names
+    // (clang -O1 strips C-source param names; explicit naming avoids
+    // a silent mismatch where the body references variables that
+    // don't exist in the emitted scope).
+    let annotations = annotate::collect(module);
+    let awk_bodies: HashMap<&str, &str> = annotations
+        .iter()
+        .filter_map(|(name, text)| {
+            text.strip_prefix("awkvm_body")
+                .map(|rest| (name.as_str(), rest))
+        })
+        .collect();
+
     for func in &module.functions {
-        func::emit_function(&mut out, func, &mut cx)?;
+        if let Some(rest) = awk_bodies.get(func.name.as_str()) {
+            emit_awk_body_function(&mut out, &func.name, &func.parameters, rest)?;
+        } else {
+            func::emit_function(&mut out, func, &mut cx)?;
+        }
     }
 
     // libc / Itanium ABI helpers. Skip any that the user has provided their
@@ -140,6 +160,13 @@ pub fn emit(
         {
             continue;
         }
+        // `awkvm_body` annotation on a declare-only function: emit the
+        // body just like for full definitions. Lets users skip writing
+        // a placeholder C body when they don't want to dual-build.
+        if let Some(rest) = awk_bodies.get(decl.name.as_str()) {
+            emit_awk_body_function(&mut out, &decl.name, &decl.parameters, rest)?;
+            continue;
+        }
         let params: Vec<String> = decl
             .parameters
             .iter()
@@ -202,6 +229,88 @@ fn parse_libc_helpers(text: &str) -> Vec<(String, String)> {
         out.push((name, body));
     }
     out
+}
+
+// Emit a function whose body is supplied verbatim by an
+// `awkvm_body(args):body` annotation, instead of translated from the
+// IR. The signature still comes from the C declaration so type
+// safety on the caller side is preserved; the awk parameter names
+// come from the `(args)` list so the body can refer to them by
+// the same names the C source uses.
+//
+// `rest` is what's left of the annotation after stripping the
+// `awkvm_body` prefix — either `(args):body` or `:body` for an
+// empty-arg function (parens optional but recommended even for 0
+// args, for symmetry).
+fn emit_awk_body_function(
+    out: &mut String,
+    fn_name: &str,
+    parameters: &[Parameter],
+    rest: &str,
+) -> Result<()> {
+    let (names, body) = parse_awk_body_annotation(rest, fn_name)?;
+    if !names.is_empty() && names.len() != parameters.len() {
+        bail!(
+            "awkvm_body annotation for `{fn_name}` declares {} parameter \
+             name(s) but the C function has {}",
+            names.len(),
+            parameters.len()
+        );
+    }
+    let params: Vec<String> = if names.is_empty() {
+        // Bare form. clang -O1 strips C names so these become
+        // `r0` / `r1` / ... — usable when the body is parameter-free
+        // or the user is OK referencing IR-style names.
+        parameters.iter().map(|p| name_to_var(&p.name)).collect()
+    } else {
+        names.into_iter().map(String::from).collect()
+    };
+    let _ = writeln!(
+        out,
+        "function {}({}) {{",
+        func_to_var(fn_name),
+        params.join(", ")
+    );
+    for line in body.lines() {
+        let _ = writeln!(out, "    {line}");
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+    Ok(())
+}
+
+// Parse the part of an `awkvm_body...` annotation after the prefix.
+// Two forms accepted:
+//   `(name1, name2, ...):body`   — explicit awk param names
+//   `:body`                       — bare; body uses IR-style names
+fn parse_awk_body_annotation<'a>(
+    text: &'a str,
+    fn_name: &str,
+) -> Result<(Vec<&'a str>, &'a str)> {
+    if let Some(after_paren) = text.strip_prefix('(') {
+        let close = after_paren.find(')').ok_or_else(|| {
+            anyhow!("awkvm_body annotation for `{fn_name}` has unmatched `(`")
+        })?;
+        let names: Vec<&str> = after_paren[..close]
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let body = after_paren[close + 1..].strip_prefix(':').ok_or_else(|| {
+            anyhow!(
+                "awkvm_body annotation for `{fn_name}` is missing `:` between \
+                 the parameter list and the body"
+            )
+        })?;
+        Ok((names, body))
+    } else if let Some(body) = text.strip_prefix(':') {
+        Ok((Vec::new(), body))
+    } else {
+        bail!(
+            "awkvm_body annotation for `{fn_name}` should look like \
+             `awkvm_body(args):body` or `awkvm_body:body`, got `awkvm_body{text}`"
+        )
+    }
 }
 
 // Extract the C-level names of every `function fn_<name>(...)`
