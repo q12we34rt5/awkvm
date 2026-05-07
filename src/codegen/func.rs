@@ -112,6 +112,8 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         Mul(i) => Some(&i.dest),
         SDiv(i) => Some(&i.dest),
         SRem(i) => Some(&i.dest),
+        UDiv(i) => Some(&i.dest),
+        URem(i) => Some(&i.dest),
         Shl(i) => Some(&i.dest),
         LShr(i) => Some(&i.dest),
         AShr(i) => Some(&i.dest),
@@ -180,6 +182,8 @@ fn emit_instruction(
             let _ = writeln!(out, "{indent}{dest} = {a} - int({a} / {b}) * {b}");
             Ok(())
         }
+        UDiv(i) => emit_bitwise(out, indent, &i.dest, "_udiv", &i.operand0, &i.operand1),
+        URem(i) => emit_bitwise(out, indent, &i.dest, "_urem", &i.operand0, &i.operand1),
         Shl(i) => emit_bitwise(out, indent, &i.dest, "_shl", &i.operand0, &i.operand1),
         LShr(i) => emit_bitwise(out, indent, &i.dest, "_lshr", &i.operand0, &i.operand1),
         AShr(i) => fn_call(out, indent, &i.dest, "_ashr", &[&i.operand0, &i.operand1]),

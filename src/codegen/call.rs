@@ -5,7 +5,7 @@ use either::Either;
 use llvm_ir::{Constant, Function, Name, Operand, Terminator};
 
 use super::MAX_ICALL_ARITY;
-use super::names::{block_label, constant_str, func_to_var, name_to_var, operand_str};
+use super::names::{block_label, constant_str, func_to_var, name_to_var, operand_bits, operand_str};
 use super::probe_map::PROBE_MAP;
 use super::types::LayoutCx;
 
@@ -392,6 +392,43 @@ fn emit_intrinsic(
         }
         "trunc" if args.len() == 1 => {
             assign(format!("({a} >= 0 ? int({a}) : -int(-{a}))", a = args[0]), out);
+        }
+        // Bit-counting intrinsics. ctpop = number of set bits;
+        // ctlz / cttz = leading / trailing zero count. libc++'s
+        // std::unordered_map's bucket index calc uses ctpop on hash
+        // values. Implementations are awk loops via _popcount /
+        // _ctlz / _cttz helpers.
+        "ctpop" if args.len() == 1 => {
+            assign(format!("_popcount({})", args[0]), out);
+        }
+        // ctlz / cttz take (value, is_zero_poison). We ignore the
+        // poison flag and always produce the natural answer for 0
+        // (width for ctlz, width for cttz).
+        "ctlz" if !args.is_empty() => {
+            let bits = operand_bits(&call.arguments[0].0)?;
+            assign(format!("_ctlz({}, {})", args[0], bits), out);
+        }
+        "cttz" if !args.is_empty() => {
+            let bits = operand_bits(&call.arguments[0].0)?;
+            assign(format!("_cttz({}, {})", args[0], bits), out);
+        }
+        // bswap reverses byte order. libc++ uses it for endian
+        // conversions in some hash implementations.
+        "bswap" if args.len() == 1 => {
+            let bits = operand_bits(&call.arguments[0].0)?;
+            assign(format!("_bswap({}, {})", args[0], bits), out);
+        }
+        // Funnel shift left/right: concatenate (a, b) into 2w bits,
+        // shift, take the w bits (high half for fshl, low half for
+        // fshr). Used in modern hash mixing as rotate-right /
+        // rotate-left when a == b.
+        "fshl" if args.len() == 3 => {
+            let bits = operand_bits(&call.arguments[0].0)?;
+            assign(format!("_fshl({}, {}, {}, {})", args[0], args[1], args[2], bits), out);
+        }
+        "fshr" if args.len() == 3 => {
+            let bits = operand_bits(&call.arguments[0].0)?;
+            assign(format!("_fshr({}, {}, {}, {})", args[0], args[1], args[2], bits), out);
         }
         // Catch matching honours the typeinfo parent chain (single
         // inheritance) instead of identity, so `catch (Base&)` accepts
