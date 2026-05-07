@@ -333,10 +333,10 @@ awk output.
 
 | Fixture | Pattern shown |
 |---|---|
-| [`examples/inline_awk.c`](../examples/inline_awk.c) | `%N` substitution with multiple inputs / single output |
-| [`examples/inline_awk_str.c`](../examples/inline_awk_str.c) | `_cstr` / `_str_to_mem` marshal via `toupper` |
-| [`examples/inline_awk_pipe.c`](../examples/inline_awk_pipe.c) | `cmd \| getline` subprocess capture |
-| [`examples/inline_awk_regex.c`](../examples/inline_awk_regex.c) | `gsub` / regex from C |
+| [`examples/ffi/inline_awk.c`](../examples/ffi/inline_awk.c) | `%N` substitution with multiple inputs / single output |
+| [`examples/ffi/inline_awk_str.c`](../examples/ffi/inline_awk_str.c) | `_cstr` / `_str_to_mem` marshal via `toupper` |
+| [`examples/ffi/inline_awk_pipe.c`](../examples/ffi/inline_awk_pipe.c) | `cmd \| getline` subprocess capture |
+| [`examples/ffi/inline_awk_regex.c`](../examples/ffi/inline_awk_regex.c) | `gsub` / regex from C |
 
 Each is a `cargo test` regression so the patterns above stay
 lockstep with what the implementation produces.

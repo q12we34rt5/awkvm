@@ -79,12 +79,12 @@ For Intel Macs or Linux, edit that file to match your install prefix.
 
 ## Quick example
 
-`examples/stats_cli.cpp` reads N then N integers, prints sum / min /
+`examples/cli/stats_cli.cpp` reads N then N integers, prints sum / min /
 max / mean to stdout (and an error to stderr on bad input). End-to-end:
 
 ```sh
 CLANGXX=/opt/homebrew/opt/llvm@19/bin/clang++
-"$CLANGXX" -O1 -std=c++17 -emit-llvm -S examples/stats_cli.cpp \
+"$CLANGXX" -O1 -std=c++17 -emit-llvm -S examples/cli/stats_cli.cpp \
     -o /tmp/stats_cli.ll
 ./target/debug/awkvm /tmp/stats_cli.ll -o /tmp/stats_cli.awk
 
@@ -92,7 +92,7 @@ printf '5\n10 -3 7 0 8\n' | LC_ALL=C gawk -f /tmp/stats_cli.awk
 # n=5 sum=22 min=-3 max=10 mean=4.4
 ```
 
-Source: [`examples/stats_cli.cpp`](examples/stats_cli.cpp).
+Source: [`examples/cli/stats_cli.cpp`](examples/cli/stats_cli.cpp).
 
 ## Usage
 
@@ -115,8 +115,8 @@ character handling.
 
 ```sh
 CLANGXX=/opt/homebrew/opt/llvm@19/bin/clang++
-"$CLANGXX" -O1 -std=c++17 -emit-llvm -S examples/cppio.cpp -o examples/cppio.ll
-"$CLANGXX" -O1 -std=c++17 -emit-llvm -c examples/cppio.cpp -o examples/cppio.bc
+"$CLANGXX" -O1 -std=c++17 -emit-llvm -S examples/iostream/cppio.cpp -o examples/iostream/cppio.ll
+"$CLANGXX" -O1 -std=c++17 -emit-llvm -c examples/iostream/cppio.cpp -o examples/iostream/cppio.bc
 ```
 
 For `.c` sources, swap `clang++` for `clang` and drop `-std=c++17`.

@@ -171,7 +171,7 @@ instead of `clip`.
 
 ## See also
 
-- [`examples/awkvm_fn.c`](../examples/awkvm_fn.c) — fixture
+- [`examples/ffi/awkvm_fn.c`](../examples/ffi/awkvm_fn.c) — fixture
   exercised by `cargo test`. Uses argv inputs to stop clang from
   const-folding the `clip(...)` call.
 - [`docs/inline-awk.md`](inline-awk.md) — statement-level inline

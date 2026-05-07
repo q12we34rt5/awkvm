@@ -159,10 +159,10 @@ same `@llvm.global.annotations` entry per function.
 
 ## See also
 
-- [`examples/awkvm_export.c`](../examples/awkvm_export.c) — fixture
+- [`examples/ffi/awkvm_export.c`](../examples/ffi/awkvm_export.c) — fixture
   exercised by `cargo test`. Three exports cover int / double / int
   signatures, called from
-  [`examples/awkvm_export_caller.awk`](../examples/awkvm_export_caller.awk).
+  [`examples/ffi/awkvm_export_caller.awk`](../examples/ffi/awkvm_export_caller.awk).
 - [`docs/link-awk.md`](link-awk.md) — the inverse direction:
   hand-written awk callable from C via `extern`.
 - [`docs/inline-awk.md`](inline-awk.md) — statement-level inline awk.

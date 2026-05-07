@@ -136,6 +136,6 @@ printf("%s\n", uppercase("hello"));     /* HELLO */
   `__asm__("AWKVM:...")`. The two features compose: linked helpers
   written in raw awk, C glue that calls them through `extern`,
   inline awk for site-specific snippets.
-- [`examples/link_basic.c`](../examples/link_basic.c) +
-  [`examples/link_basic.awk`](../examples/link_basic.awk) — the
-  fixture this guide walks through, exercised by `cargo test`.
+- [`examples/ffi/link_basic.c`](../examples/ffi/link_basic.c) +
+  [`examples/ffi/link_basic.awk`](../examples/ffi/link_basic.awk) —
+  the fixture this guide walks through, exercised by `cargo test`.
