@@ -1,5 +1,147 @@
 # Changelog
 
+## [0.3.0] — 2026-05-08
+
+Theme: **I/O subsystem**. Single address-keyed stream model
+(`_STREAM_*` tables) shared by libc `FILE*` and C++ `<fstream>`.
+A program that mixes `fwrite(fp, ...)` and `ofstream f; f << ...`
+reads back identically through either side.
+
+### Added — stream foundation
+
+- **`src/runtime/stream.awk`** — six `_STREAM_*` tables
+  (`DEST` / `SRC` / `KIND` / `BUF` / `POS` / `EOF`) keyed by stream
+  address. Five primitives that both API surfaces share:
+  `_stream_open_w / open_r / close / read_byte / read_line`,
+  `_stream_write_byte / write_str`. `KIND` picks the gawk redirect
+  operator (`>` / `>>` / `<` / `cmd | getline` / `print | cmd`).
+
+### Added — libc bridge
+
+- **`fopen` / `fclose`** — `fopen` allocates a 1-byte FILE\* address,
+  registers in stream tables; modes `"r"` / `"w"` / `"a"` (with
+  optional `"b"` suffix). `"+"` forms not supported.
+- **`fwrite` / `fread`** — bytewise loops over `MEM[]`. `fread`
+  returns floor(bytes_read / size) on EOF mid-element.
+- **`fputc` / `fputs` / `fgetc` / `fgets`** — single-byte and
+  C-string convenience wrappers.
+- **`popen` / `pclose`** — pipe streams; `pclose` returns gawk's
+  `close()` status so child exit code surfaces.
+- **`system`** — direct wrap of gawk's blocking `system()`.
+- **`fprintf`** — same `_format` engine as `printf`, routed
+  through `_stream_write_str(stream, ...)` instead of bare gawk
+  `printf`.
+- **`scanf` / `fscanf` / `sscanf`** — format-driven token reader
+  on top of `_istream_read_token` / `_stream_read_byte`. `scanf`
+  uses a lazily-registered `/dev/stdin` sentinel stream;
+  `sscanf` preloads `_STREAM_BUF` from a cstring in MEM.
+
+### Added — C++ `<fstream>`
+
+- **`std::ofstream(path)` / `std::ifstream(path)`** — constructor
+  probes register the path against the fstream's `this` AND
+  `this + 8` (the rdbuf at +8 in libc++ layout) so both `<<` /
+  `>>` (which key on `this`) and `f.close()` (which dispatches
+  through the rdbuf) reach the same `_STREAM_*` entry.
+- **`f << x` / `f >> x`** — inherited via base class; reuses the
+  existing cout / cin probe-bindings for primitives. `cin >>` extended with `unsigned` / `unsigned long` overloads.
+- **`f.write(buf, n)` / `f.put(c)`** — block + single-byte write.
+  `write` shares the byte-loop helper with `<< "literal"`.
+- **`f.read(buf, n)` / `f.gcount()` / `f.get()`** — block +
+  single-byte read. `gcount()` isn't probed (clang -O1 inlines it
+  to a load from offset +8); `_istream_read` / `_istream_get`
+  `_store` the count at `MEM[stream+8]` so the inlined load picks
+  it up.
+- **`f.close()`** — routed through `basic_filebuf::close` (the
+  mangled name `f.close()` actually resolves to). Closes the
+  gawk-side handle; without this probe gawk's redirected output
+  stays buffered and read-after-write to the same file in one
+  program reads stale state.
+
+### Added — robustness
+
+- **Locale hard-fail at startup.** `BEGIN` block in
+  `src/runtime/prelude.awk` checks `length("中") == 3` (true under
+  `LC_ALL=C`, false under UTF-8 locales) and exits 2 with a
+  pointer to the fix. awkvm's runtime treats strings as byte
+  sequences; UTF-8 locales silently break byte-level I/O —
+  failing loud is better than silent corruption.
+- **Darwin `\x01_` asm-rename canonicalization.** Apple's
+  `<stdio.h>` declares `fopen` / `fwrite` / `fputs` / `freopen`
+  / `popen` with `__asm("_<name>")` aliases (LFS-compat
+  artifact). clang emits these as `\x01_fopen` etc. in IR;
+  `func_to_var` and the helper-name lookups now strip the
+  `\x01_` prefix so `fn_fopen` / `fn_fwrite` / etc. resolve
+  platform-agnostically. New `canonical_fn_name` helper in
+  `src/codegen/names.rs`.
+
+### Examples — reorganized into seven subdirectories
+
+```
+examples/
+├── basics/      Phase 1-9 IR features
+├── exceptions/  C++ EH
+├── stdlib/      C++ stdlib smoke
+├── iostream/    cout / cin probe bindings
+├── cli/         CLI demos (stats_cli)
+├── ffi/         v0.2.0 FFI features
+└── io/          v0.3.0 I/O subsystem
+```
+
+Test stems updated to the `category/name` form (`basics/add`,
+`io/io_mixed`, etc.); the fixture runner strips the subdir prefix
+when naming temp `.ll` / `.awk` artifacts so they stay flat.
+
+### Added — tests
+
+`cargo test` runs **46 end-to-end fixtures** (was 37) plus 5
+runtime unit-test bundles. New v0.3.0 fixtures:
+
+- `io/file_io` — fopen / fwrite / fclose / fread round-trip
+- `io/io_mixed` — libc and ofstream both writing, both readable
+- `io/ifstream_extract` — ifstream + `>>` for primitives
+- `io/block_io` — write / put / read / gcount / get(EOF)
+- `io/fprintf_basic` — fprintf with `%d / %s / %.3f` round-trip
+- `io/scanf_basic` — scanf reading three primitives from stdin
+- `io/fscanf_basic` — fprintf write + fscanf read same FILE\*
+- `io/sscanf_basic` — sscanf parsing primitives from a cstring
+- `iostream/cin_unsigned` — `cin >> unsigned / unsigned long`
+
+### Documentation
+
+- New [`docs/io.md`](docs/io.md) — stream subsystem model, libc
+  + C++ surface tables, locale requirement, `rdbuf`-swap
+  limitation explanation, full v0.4.0 deferral list.
+- README "Feature guides" section gains the io.md pointer.
+
+### Known limitations / deferred to v0.4.0
+
+iostream completion lands as a v0.4.0 theme:
+
+- **`std::endl` proper.** clang inlines `endl` into ~6 calls
+  including a virtual `widen('\n')` through ctype facet's vtable.
+  Resolving that requires modeling libc++ locale machinery (or
+  pattern-matching the inlined sequence — both v0.4.0 scope).
+  Workaround: write `"\n"` literal.
+- **`std::getline(is, str)` / `cin >> std::string`.** libc++
+  `std::string` is SSO-laid-out in `MEM[]`; writing requires
+  layout-aware code. Deferred.
+- **`<iomanip>`** (`setw` / `setfill` / `setprecision` / `hex` /
+  `oct` / `dec` / `fixed` / `scientific`). Per-stream format
+  state + manipulator dispatch.
+- **`<sstream>`** (in-memory streams) and **`cout.rdbuf(...)`
+  swap** (two-level `ostream → streambuf id → target` dispatch
+  table). Same machinery; ship together.
+- **State queries** — `is.eof()` / `is.fail()` / `is.good()` /
+  `is.bad()` fall through to libc++ linkonce_odr bodies that
+  no-op in awkvm.
+
+### Compatibility
+
+No breaking changes to v0.2.0 codegen behavior. New `--library`
+flag from v0.2.0 unchanged. Stream tables internal to runtime;
+user IR doesn't see them.
+
 ## [0.2.0] — 2026-05-07
 
 Theme: **C ↔ awk FFI**. Four pieces ship together to make awkvm

@@ -1,6 +1,6 @@
 [package]
 name = "awkvm"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Compile LLVM IR to gawk script"
 license = "MIT OR Apache-2.0"

@@ -8,71 +8,57 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 ## In progress
 
-_(empty — picking up v0.3.0 next)_
+_(empty — v0.3.0 just shipped)_
 
-## Next major: v0.3.0 — I/O subsystem
+## Next major: v0.4.0 — iostream completion
 
-Coherent release theme: design awkvm's stream subsystem once, layer
-both the libc and iostream APIs on top. The two API surfaces share
-the same gawk primitives (`print > "file"`, `getline x < "file"`,
-`cmd | getline`, `print | cmd`, `system()`); doing them together
-means designing the stream model once instead of refactoring when
-the second consumer comes online.
+The pieces of iostream that v0.3.0 deliberately deferred. They
+cluster around **two shared infrastructure projects**:
 
-### Stream subsystem (foundation)
+### Cluster 1: streambuf indirection unit
 
-- fd-keyed table on the awk side mapping descriptor →
-  (kind, gawk-target). Kinds: file, pipe-read, pipe-write, stdin,
-  stdout, stderr, in-memory (for sstream).
-- `/dev/stdin` line buffer reuse — the existing `cin` token reader
-  is the closest precedent; lift it into a stream-keyed buffer so
-  `getline(cin, ...)` and `fread(stdin, ...)` share state.
-- Read / write / close primitives that both API surfaces call.
+Same machinery solves three deferred items at once. Two-level
+dispatch table (`ostream → streambuf id → target`) replaces the
+current direct address-keyed `_STREAM_DEST[stream_addr]` lookup;
+ostreams resolve their rdbuf at write time via a MEM read at the
+ostream's rdbuf field offset.
 
-### libc bridge
+- **[iostream]** `<sstream>` (in-memory streams). Backed by an
+  awk string keyed in a new `_SSTREAM_BUF[id]` table; the
+  streambuf indirection routes writes there instead of a gawk
+  redirect target.
+- **[iostream]** `cout.rdbuf(...)` swap — currently `cout`'s
+  `_STREAM_DEST` is permanently bound; with two-level dispatch
+  the swap re-targets cout's writes to the new streambuf.
+- **[iostream]** State queries (`is.eof()` / `fail()` / `good()` /
+  `bad()`) — once we model streambuf, the iostate flags it backs
+  become reachable too.
 
-- **[libc-io]** `system()` — gawk `system(s)` is already blocking
-  fork+exec; one-line in `emit_libc`.
-- **[libc-io]** `fopen` / `fwrite` / `fclose` write path — gawk
-  `print > "file"` + `close("file")` already provides the
-  underlying capability. Per-byte `printf "%c"` for binary data.
-- **[libc-io]** `fread` line-buffered, slice into caller buffer.
-  Uglier than fwrite — gawk's `getline` is line-based.
-- **[libc-io]** `popen` / `pclose` — `cmd | getline` (read mode)
-  / `print | cmd` (write mode). Standard POSIX C API; user code
-  doesn't know it's awk.
-- **[libc-io]** `scanf` / `sscanf` / `fscanf` — small parser on
-  top of the format spec; reuses `_atoi` / `_atof`. ~one day.
+### Cluster 2: ctype facet model
 
-### iostream bridge
+Solves `endl` and any other locale-dependent output.
 
-- **[iostream]** `std::endl` proper support — needs ctype facet
-  modeling so the inlined `widen('\n')` virtual dispatch resolves.
-  Fallback: documented permanent workaround (use `"\n"`).
-- **[iostream]** `std::getline(cin, str)`. Maps directly to gawk's
-  `getline x < "/dev/stdin"`; thin wrapper over the line buffer.
-- **[iostream]** Extend cin further: `>> std::string`,
-  `>> unsigned` variants. Numeric tier (int / long / double) is
-  wired; string needs libc++-layout-aware writes (similar story
-  to `cout << string` but on the read side).
-- **[iostream]** `<iomanip>` (setw / setfill / setprecision /
-  hex / oct / dec / fixed / scientific). Per-stream format state
-  on the awk side + per-helper consultation.
-- **[iostream]** `<sstream>` + `<fstream>` + `cout.rdbuf(...)`
-  swap as one streambuf-indirection unit. Two-level dispatch
-  table (`ostream → streambuf id → target`) replaces the current
-  cout/cerr/clog identity check.
+- **[iostream]** `std::endl` proper. clang inlines `endl` into a
+  ~6-call sequence including a virtual `widen('\n')` through
+  the ctype facet's vtable. Fix: pre-populate
+  `MEM[ctype<char>_vtable + 56]` with a sentinel function id that
+  `_icall` resolves to identity-of-last-arg. Layout-sensitive
+  (libc++ vtable offset must be probed). Workaround: write
+  `"\n"` literal.
 
-### Demo target
+### Other iostream completion
 
-End-to-end fixture exercising both surfaces in one program:
-`fopen("file", "w"); fprintf(fp, ...)` and
-`std::ofstream f; f << ...` writing to a verified output file.
-Plus a roundtrip: write via libc, read via iostream (or vice
-versa) to prove the descriptor table is shared.
-
-Estimated effort: ~one week. Bigger than v0.2.0 (~3 days), but
-release story is clean — "awkvm now has a real I/O subsystem".
+- **[iostream]** `std::getline(is, str)` / `cin >> std::string`.
+  Needs libc++ string SSO-layout-aware write into MEM. Same
+  string layout work would also unlock `cout << string` (already
+  works for inline literals via `__put_character_sequence`, but
+  not for a constructed `std::string`).
+- **[iostream]** `<iomanip>` — setw / setfill / setprecision /
+  hex / oct / dec / fixed / scientific / left / right /
+  boolalpha. Probe each manipulator (non-virtual method calls,
+  no vtable indirect — easier than endl), refactor
+  `_ostream_int / double / unsigned / voidptr` to consult
+  per-stream format state from MEM at ios_base offsets.
 
 ## Todo (later)
 
@@ -98,20 +84,20 @@ release story is clean — "awkvm now has a real I/O subsystem".
 - **[docs]** README "Limitations" section, mining from
   `LIMITATIONS.md` once stable.
 
-## Future release candidates (post-v0.3.0)
+## Future release candidates (post-v0.4.0)
 
 Themes ordered roughly by impact-to-effort, each its own minor
 release:
 
-- **v0.4.0 — Tooling / DX.** `awkvmcc` driver wrapping
+- **v0.5.0 — Tooling / DX.** `awkvmcc` driver wrapping
   `clang -emit-llvm` + `llvm-link` + awkvm into a cc-style binary;
   source maps from awk → C/C++ line via IR `!dbg`; `awkvm trace`
   for BB-transition logging; better error messages with function /
   block context.
-- **v0.5.0 — CI / release infrastructure.** GitHub Actions over
+- **v0.6.0 — CI / release infrastructure.** GitHub Actions over
   (macOS / Linux × clang / gawk versions); Linux verification
   pass on the existing fixture suite; pre-built binary releases.
-- **v0.6.0 — ADT lifting.** D2-D6 from "Todo (later)" — start
+- **v0.7.0 — ADT lifting.** D2-D6 from "Todo (later)" — start
   with `std::string`, then `std::vector`, then `std::map`. Big
   performance lift for string-heavy programs.
 
@@ -124,6 +110,44 @@ release:
 
 ## Done (recent commits)
 
+- _(this commit)_ v0.3.0 release: CHANGELOG, version bump, tag
+- `02cd004` `sscanf` — third item from the original v0.3.0 plan;
+  preloads `_STREAM_BUF` from a cstring in MEM and runs the same
+  `_scanf_engine` over it
+- `aa05f61` `scanf` / `fscanf` — counterpart to printf, reads via
+  stream subsystem; lazily-registered `_scanf_stdin` sentinel
+- `448c890` `fprintf` — printf engine routed through stream
+  subsystem; refactored `_format(fmt)` for both `_printf` and
+  `_fprintf`
+- `0b0e03c` `docs/io.md` updated for fprintf / scanf / fscanf
+- `0efd0fa` `docs/io.md` — v0.3.0 file and stream I/O cookbook
+- `7acef9a` Block / single-char unformatted I/O methods (`read` /
+  `write` / `get` / `put`); `gcount` is the inlined load from
+  MEM[istream+8] — `_istream_read` / `_istream_get` `_store` the
+  count there before returning
+- `ae566c1` ifstream + `>>` extraction fixture
+- `08bf649` README + per-feature docs path updates for the
+  examples/ subdir reorg
+- `937b330` examples/ organized into seven topical subdirs
+  (basics / exceptions / stdlib / iostream / cli / ffi / io)
+- `0784fde` `std::ofstream` / `std::ifstream` constructor probe +
+  `basic_filebuf::close` probe; dual address registration
+  (`this` AND `this+8`) so `<<` and `close()` both find the
+  stream entry
+- `30a1de3` `cin >> unsigned` / `cin >> unsigned long`
+- `9214428` Hard-fail at startup when gawk is in a multi-byte
+  locale (`length("中") != 3` ⇒ `LC_ALL=C` reminder + exit 2)
+- `6d86551` libc FILE\* bridge + Darwin `\x01_` asm-rename
+  canonicalization. fopen / fread / fwrite / fclose / fputc /
+  fputs / fgetc / fgets / popen / pclose / system landed; new
+  `canonical_fn_name` helper strips Darwin's LFS asm-renames so
+  `fn_fopen` resolves platform-agnostically.
+- `4ba5022` Stream subsystem foundation — unified `_STREAM_*`
+  tables. iostream's per-stream tables renamed; new stream.awk
+  factors out the line-buffer reader as a primitive both API
+  surfaces share.
+- `eb0c5be` v0.3.0 plan written into TODO ("I/O subsystem,
+  libc + iostream together")
 - `3066644` v0.2.0 release: CHANGELOG, version bump, tag
 - `b2b65a1` Multi-library limitation documented — combine `.bc`
   files via `llvm-link` before `awkvm`, not awk outputs
