@@ -378,6 +378,45 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn scanf_basic() {
+    // scanf reads three primitives from stdin via the
+    // lazy-registered _scanf_stdin sentinel stream. _PA[] holds the
+    // destination addresses; _scanf_engine stores parsed values
+    // through them and returns count.
+    let out = run_fixture_with_stdin(
+        "io/scanf_basic",
+        "c",
+        &[],
+        b"42 9876543210 3.14\n",
+    );
+    assert_eq!(out.exit, 0, "[scanf_basic] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        b"read 3 items: a=42 b=9876543210 c=3.14\n",
+        "[scanf_basic] stdout mismatch:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[test]
+fn fscanf_basic() {
+    // fscanf reads from a libc FILE*. fprintf writes first; fscanf
+    // reads the same three primitives back. Verifies the
+    // _scanf_engine works on any registered stream, not just stdin.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("fscanf.txt");
+    let path_str = path.to_str().expect("path utf8");
+    let out = run_fixture("io/fscanf_basic", "c", &[path_str]);
+    assert_eq!(out.exit, 0, "[fscanf_basic] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        b"read 3 items: a=42 b=9876543210 c=3.14\n",
+        "[fscanf_basic] stdout mismatch:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[test]
 fn fprintf_basic() {
     // fprintf-to-fopen'd-file round-trip via _fprintf (stream-routed
     // version of the same _format engine printf uses).

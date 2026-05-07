@@ -13,6 +13,7 @@ pub const RUNTIME: &str = concat!(
     include_str!("fp.awk"),
     include_str!("stream.awk"),
     include_str!("iostream.awk"),
+    include_str!("scanf.awk"),
 );
 
 // libc / Itanium ABI bridge. Emitted block-by-block by codegen so that
