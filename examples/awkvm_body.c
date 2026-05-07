@@ -1,39 +1,39 @@
-// Demonstrates `__attribute__((annotate("awkvm_body(args):body")))`.
-// awkvm reads the annotation and uses its content as the awk function
-// body, skipping IR translation entirely.
+// Demonstrates `__attribute__((annotate("awkvm_body(args) { body }")))`.
+// awkvm reads the annotation and emits the awk function body verbatim,
+// skipping IR translation entirely. The C-side type signature still
+// gates callers — both `clip(x, lo, hi)` from C and inline awk
+// reaching `fn_clip(...)` route through the same body.
 //
-// `clip` here is a declare-only function — no C body, awkvm provides
-// the implementation through the annotation. Useful when the function
-// only exists to be called from awkvm-compiled code (no native build
-// to dual-target). For a dual-build pattern instead, give the C
-// function a real body too — awkvm will still use the annotation,
-// native compile uses the C body, and you can keep the two in sync.
+// The `AWKVM_FN(decl, body)` convenience macro wraps the annotation
+// attribute around a declaration; it appends `;` automatically so the
+// caller doesn't need a trailing semicolon inside the macro args. The
+// body uses awk function syntax (`(params) { ... }`) and reads as a
+// complete awk function definition. C-style adjacent string literal
+// concatenation builds it across multiple source lines; awkvm
+// dedents and trims blank lines so the emitted output stays clean.
 //
-// `(x, lo, hi)` rename list maps the awk function's parameters to
-// names matching the C signature — clang -O1 strips C-source param
-// names from the IR, so the rename keeps the awk body readable and
-// avoids a silent name-mismatch.
-//
-// Body itself is multi-line via C-style adjacent string literal
-// concatenation (also works in C++); for C++ specifically, raw
-// string literals `R"((args):...)"` are an alternative that lets you
-// drop the inner `\n`.
+// `clip` here is declare-only — no C body, awkvm provides the
+// implementation. For dual-build (native + awkvm), add a real C body
+// after AWKVM_FN; native compile uses the C body, awkvm uses the
+// annotation. The trailing `;` AWKVM_FN appends after `}` becomes a
+// stray empty declaration and is silently accepted.
 //
 // Inputs come from argv so clang can't const-fold the `clip(...)`
 // calls — important for catching mistakes in the awk body.
 
-#define AWKVM_BODY(s) __attribute__((annotate("awkvm_body" s)))
+#define AWKVM_FN(decl, body) __attribute__((annotate("awkvm_body" body))) decl;
 
 #include <stdio.h>
 #include <stdlib.h>
 
-AWKVM_BODY(
-    "(x, lo, hi):"
-    "if (x < lo) return lo\n"
-    "if (x > hi) return hi\n"
-    "return x"
+AWKVM_FN(
+    int clip(int x, int lo, int hi),
+    "(x, lo, hi) {"
+    "    if (x < lo) return lo\n"
+    "    if (x > hi) return hi\n"
+    "    return x\n"
+    "}"
 )
-int clip(int x, int lo, int hi);
 
 int main(int argc, char** argv) {
     if (argc != 6) {

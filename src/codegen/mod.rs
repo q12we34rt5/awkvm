@@ -249,7 +249,7 @@ fn emit_awk_body_function(
     rest: &str,
 ) -> Result<()> {
     let (names, body) = parse_awk_body_annotation(rest, fn_name)?;
-    if !names.is_empty() && names.len() != parameters.len() {
+    if names.len() != parameters.len() {
         bail!(
             "awkvm_body annotation for `{fn_name}` declares {} parameter \
              name(s) but the C function has {}",
@@ -257,21 +257,14 @@ fn emit_awk_body_function(
             parameters.len()
         );
     }
-    let params: Vec<String> = if names.is_empty() {
-        // Bare form. clang -O1 strips C names so these become
-        // `r0` / `r1` / ... — usable when the body is parameter-free
-        // or the user is OK referencing IR-style names.
-        parameters.iter().map(|p| name_to_var(&p.name)).collect()
-    } else {
-        names.into_iter().map(String::from).collect()
-    };
+    let params: Vec<String> = names.into_iter().map(String::from).collect();
     let _ = writeln!(
         out,
         "function {}({}) {{",
         func_to_var(fn_name),
         params.join(", ")
     );
-    for line in body.lines() {
+    for line in dedent_body(body) {
         let _ = writeln!(out, "    {line}");
     }
     let _ = writeln!(out, "}}");
@@ -279,38 +272,75 @@ fn emit_awk_body_function(
     Ok(())
 }
 
-// Parse the part of an `awkvm_body...` annotation after the prefix.
-// Two forms accepted:
-//   `(name1, name2, ...):body`   — explicit awk param names
-//   `:body`                       — bare; body uses IR-style names
+// Parse the body portion of an `awkvm_body(args) { body }` annotation.
+// `text` is what's left after the `awkvm_body` prefix.
 fn parse_awk_body_annotation<'a>(
     text: &'a str,
     fn_name: &str,
 ) -> Result<(Vec<&'a str>, &'a str)> {
-    if let Some(after_paren) = text.strip_prefix('(') {
-        let close = after_paren.find(')').ok_or_else(|| {
-            anyhow!("awkvm_body annotation for `{fn_name}` has unmatched `(`")
-        })?;
-        let names: Vec<&str> = after_paren[..close]
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let body = after_paren[close + 1..].strip_prefix(':').ok_or_else(|| {
-            anyhow!(
-                "awkvm_body annotation for `{fn_name}` is missing `:` between \
-                 the parameter list and the body"
-            )
-        })?;
-        Ok((names, body))
-    } else if let Some(body) = text.strip_prefix(':') {
-        Ok((Vec::new(), body))
-    } else {
-        bail!(
+    let after_paren = text.strip_prefix('(').ok_or_else(|| {
+        anyhow!(
             "awkvm_body annotation for `{fn_name}` should look like \
-             `awkvm_body(args):body` or `awkvm_body:body`, got `awkvm_body{text}`"
+             `awkvm_body(args) {{body}}`, got `awkvm_body{text}`"
         )
+    })?;
+    let close = after_paren
+        .find(')')
+        .ok_or_else(|| anyhow!("awkvm_body annotation for `{fn_name}` has unmatched `(`"))?;
+    let names: Vec<&str> = after_paren[..close]
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let after_args = after_paren[close + 1..].trim_start();
+    let after_brace = after_args.strip_prefix('{').ok_or_else(|| {
+        anyhow!(
+            "awkvm_body annotation for `{fn_name}` is missing `{{` between \
+             the parameter list and the body"
+        )
+    })?;
+    let trimmed = after_brace.trim_end();
+    let body = trimmed.strip_suffix('}').ok_or_else(|| {
+        anyhow!(
+            "awkvm_body annotation for `{fn_name}` is missing closing `}}`"
+        )
+    })?;
+    Ok((names, body))
+}
+
+// Trim leading / trailing blank lines and strip the common leading
+// whitespace from a multi-line body so user-written indentation
+// translates cleanly into the emitted awk function.
+fn dedent_body(body: &str) -> Vec<String> {
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| !l.trim().is_empty())
+        .unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    if start >= end {
+        return Vec::new();
     }
+    let core = &lines[start..end];
+    let common = core
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    core.iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else {
+                l[common..].to_string()
+            }
+        })
+        .collect()
 }
 
 // Extract the C-level names of every `function fn_<name>(...)`
