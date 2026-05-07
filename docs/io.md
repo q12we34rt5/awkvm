@@ -60,6 +60,8 @@ etc.) look up by address. No two-level indirection — see
 | `fclose` | Closes the gawk-side handle; drops all per-stream tables. |
 | `fputc` / `fputs` | Single byte / NUL-terminated C-string write. |
 | `fgetc` / `fgets` | Single byte / line-terminated read. `fgets` includes the newline if hit before size-1. |
+| `fprintf` / `printf` | Same `_format` engine; `fprintf` routes the formatted string through `_stream_write_str(stream, ...)` instead of bare gawk `printf`. Specs: `%d %i %u %x %X %o %c %s %p %f %F %g %G %e %E %%`. |
+| `scanf` / `fscanf` | `scanf` reads from `/dev/stdin` via a lazily-registered sentinel stream; `fscanf` works on any FILE\* registered by `fopen`. Specs: `%d %i %ld %u %x %lo %f %lf %g %le %s %c`. Width + `*` (assignment-suppression) ignored. Returns count of items assigned. |
 | `popen(cmd, mode)` / `pclose` | `mode == "r"` reads child stdout via `cmd \| getline`; `"w"` feeds child stdin via `print \| cmd`. `pclose` returns gawk's `close()` status (child exit code). |
 | `system(cmd)` | Direct wrap of gawk's blocking `system()`. |
 
@@ -142,9 +144,6 @@ in v0.4.0 "iostream completion".
   manipulator dispatch layer.
 - **`<sstream>`.** In-memory streams require a streambuf
   indirection unit (same machinery as rdbuf swap).
-- **`fprintf(fp, fmt, ...)`.** Needs the `_printf` engine
-  refactored to take a stream parameter. Workaround: format with
-  `sprintf`-equivalent then `fwrite` the result.
 - **State queries** (`is.eof()`, `is.fail()`, `is.good()`, etc.)
   fall through to the linkonce_odr libc++ bodies, which no-op in
   awkvm. Practical effect: they always return success-ish
@@ -173,6 +172,12 @@ in v0.4.0 "iostream completion".
   — ifstream + `>>` extraction round-trip for primitives.
 - [`examples/io/block_io.cpp`](../examples/io/block_io.cpp) —
   ofstream::write + put → ifstream::read + gcount + get(EOF).
+- [`examples/io/fprintf_basic.c`](../examples/io/fprintf_basic.c) —
+  `fprintf` to a libc FILE\* with `%d / %s / %.3f`.
+- [`examples/io/scanf_basic.c`](../examples/io/scanf_basic.c) —
+  `scanf` reading three primitives from stdin.
+- [`examples/io/fscanf_basic.c`](../examples/io/fscanf_basic.c) —
+  `fprintf` write + `fscanf` read round-trip via the same FILE\*.
 - [`docs/inline-awk.md`](inline-awk.md) — for I/O patterns awkvm
   doesn't bind directly (gawk's coprocess `\|&`, `getline` from
   arbitrary sources, `system()` with output capture, etc.).
