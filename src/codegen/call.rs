@@ -399,6 +399,8 @@ fn emit_invoke(
             };
             if target_name == "printf" {
                 emit_printf(out, &args, Some(&inv.result), indent);
+            } else if let Some(template) = probe_template(&target_name) {
+                emit_probe(out, template, &args, Some(&inv.result), indent);
             } else {
                 let target = func_to_var(&target_name);
                 let _ = writeln!(out, "{indent}{result} = {target}({})", args.join(", "));

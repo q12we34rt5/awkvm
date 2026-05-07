@@ -63,3 +63,20 @@ istream_ulong   => _istream_unsigned(arg0, arg1, 64)
 # cin >> double. Same token-read flow, but the destination is an
 # 8-byte IEEE 754 slot, so the helper goes through `_store_f64`.
 istream_double  => _istream_double(arg0, arg1)
+
+# std::ofstream / std::ifstream constructor — register the file as a
+# write / read stream against the ofstream/ifstream's `this` pointer
+# (arg0). Subsequent `<<` / `>>` operations on the object resolve
+# through the same _ostream_* / _istream_* helpers as cout / cin
+# because they're inherited from the base class. Destructors aren't
+# probed (virtual dispatch makes the mangled name awkward to capture
+# from a probe body) — gawk's process-exit auto-flush closes the
+# file in practice.
+ofstream_ctor   => _ofstream_open(arg0, _cstr(arg1))
+ifstream_ctor   => _ifstream_open(arg0, _cstr(arg1))
+
+# basic_filebuf::close — explicit user `f.close()` and the close
+# inside the destructor's linkonce_odr body both route here. arg0 is
+# the filebuf's `this` (= stream addr + 8 in libc++), which matches
+# the +8 entry registered by `_o/ifstream_open`.
+filebuf_close   => _stream_close(arg0)

@@ -13,6 +13,22 @@
 # `_stream_write_str`. The libc FILE* bridge will share the same
 # tables, so the stream registry is a single source of truth.
 
+# f/i-stream open helpers. libc++'s basic_o/ifstream lays its rdbuf
+# (basic_filebuf) at offset +8 from the stream object. Two addresses
+# show up in IR: `<<` / `>>` use the stream's `this`, while explicit
+# `close()` calls dispatch through the rdbuf at +8. Register the
+# same gawk-side path against both so either path reaches the
+# underlying _STREAM_* tables.
+function _ofstream_open(addr, path) {
+    _stream_open_w(addr, path, "file_w")
+    _stream_open_w(addr + 8, path, "file_w")
+}
+
+function _ifstream_open(addr, path) {
+    _stream_open_r(addr, path, "file_r")
+    _stream_open_r(addr + 8, path, "file_r")
+}
+
 function _ostream_int(stream, val) {
     _stream_write_str(stream, sprintf("%d", val))
     return stream

@@ -9,6 +9,7 @@
 // __attribute__((noinline)) keeps the wrapper from being collapsed away
 // at -O1; extern "C" gives a stable, non-mangled name we can grep for.
 
+#include <fstream>
 #include <iostream>
 
 #define PROBE __attribute__((noinline)) extern "C"
@@ -65,6 +66,37 @@ PROBE std::ostream* awkvm_probe_ostream_cerr() {
 
 PROBE std::ostream* awkvm_probe_ostream_clog() {
     return &std::clog;
+}
+
+// std::ofstream constructor — `std::ofstream f(path)` lowers to a
+// stack alloca + a call to the C1 constructor (`...C1EPKcj`) with
+// the openmode flag defaulting to `out`. The runtime template
+// registers the path as a write-mode stream against the ofstream's
+// `this` pointer (arg0); subsequent `<<` operations resolve through
+// the same _ostream_* helpers as cout because they're inherited
+// from std::ostream. Mode flags (app / trunc / ate / binary) are
+// ignored in v0.3.0 — default truncate-on-open matches the
+// dominant `ofstream f(path)` usage.
+//
+// Destructor handling: the libc++ destructor is virtual and
+// linkonce_odr-defined in the user's IR, so the translated awk
+// body runs at scope exit; it manipulates vtables / locale state
+// that awkvm doesn't model, but in practice that no-ops out. The
+// file is closed by gawk's auto-flush at process exit. For
+// long-lived programs that need explicit mid-program close, call
+// `f.close()` (which routes through a libc++ method we don't yet
+// probe — TODO for v0.4.0).
+PROBE void awkvm_probe_ofstream_ctor(const char* path) {
+    std::ofstream f(path);
+}
+
+// basic_filebuf::close — covers explicit `f.close()` on both
+// ofstream and ifstream, plus the filebuf-close call inside the
+// linkonce_odr destructor body. Without intercepting close at this
+// level, gawk's redirected output stays buffered (and read-after-
+// write to the same file in one program reads stale state).
+PROBE void awkvm_probe_filebuf_close(std::filebuf* f) {
+    f->close();
 }
 
 // Two ostream operations we deliberately *don't* probe yet:

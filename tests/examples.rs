@@ -374,6 +374,40 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn io_mixed() {
+    // v0.3.0 demo: libc fopen/fwrite/fclose AND C++ ofstream/<< on
+    // the same stream subsystem. Two paths to two files; readback
+    // proves the underlying content is what we wrote (not stale or
+    // buffered) — that's the integration test the unified
+    // _STREAM_* tables were built for.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path_a = tmp.path().join("a.txt");
+    let path_b = tmp.path().join("b.txt");
+    let out = run_fixture(
+        "io_mixed",
+        "cpp",
+        &[
+            path_a.to_str().expect("path_a utf8"),
+            path_b.to_str().expect("path_b utf8"),
+        ],
+    );
+    let expected = b"a: from libc\nb: from ofstream\n";
+    assert_eq!(out.exit, 0, "[io_mixed] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[io_mixed] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[io_mixed] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn file_io() {
     // fopen → fwrite ×2 → fclose → fopen → fread → fclose → printf.
     // Path lives in a per-test TempDir so the file is auto-cleaned;
