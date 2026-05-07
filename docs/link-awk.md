@@ -64,6 +64,29 @@ your own C functions. It leaks awkvm's internal naming, but only at
 the same boundary where you already see `_cstr` / `_str_to_mem` /
 `_alloc` / `MEM[]` and other internals.
 
+## C++ callers must wrap externs in `extern "C"`
+
+C++ mangles symbol names for overload resolution: a plain
+`extern int clip(int, int, int);` in a `.cpp` file lowers in IR as
+`_Z4clipiii`, not `clip`. awkvm's `fn_<sanitize(name)>` codegen rule
+then emits `fn__Z4clipiii(...)`, which doesn't match the linked
+`function fn_clip(...)`.
+
+Wrap the extern in `extern "C"` so C++ keeps the name unmangled:
+
+```cpp
+extern "C" int clip(int x, int lo, int hi);
+```
+
+This is the standard C++ idiom for cross-language linkage; it's not
+specific to awkvm. The fixture above uses `.c` source so the issue
+doesn't appear, but any `.cpp` user hitting `--link` needs the
+wrapper.
+
+(Watch out for `clang++` driver mode silently treating `.c` files
+as C++ — pick `clang` for `.c` sources or you'll see the same
+mangling appear unexpectedly.)
+
 ## What linked awk can use
 
 The runtime helpers (`_alloc` / `_load` / `_store` / `_cstr` /
