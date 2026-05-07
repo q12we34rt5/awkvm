@@ -85,3 +85,16 @@ function _scanf(fmt_addr) {
 function _fscanf(stream, fmt_addr) {
     return _scanf_engine(stream, fmt_addr)
 }
+
+# sscanf — input source is a NUL-terminated C-string in MEM, not a
+# stream. Preload `_STREAM_BUF` for a sentinel key and run the same
+# engine; with no `_STREAM_SRC` registered, `_stream_read_line` will
+# return 0 once the buffer is consumed and the engine stops.
+function _sscanf(addr, fmt_addr,    key) {
+    key = "_sscanf_buf"
+    _STREAM_BUF[key] = _cstr(addr)
+    _STREAM_POS[key] = 1
+    delete _STREAM_SRC[key]
+    delete _STREAM_EOF[key]
+    return _scanf_engine(key, fmt_addr)
+}

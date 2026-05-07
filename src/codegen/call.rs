@@ -53,6 +53,10 @@ pub(super) fn emit_call(
         emit_fscanf(out, &args, call.dest.as_ref(), indent);
         return Ok(());
     }
+    if target_name == "sscanf" {
+        emit_sscanf(out, &args, call.dest.as_ref(), indent);
+        return Ok(());
+    }
 
     // probe map: mangled libc++ symbols recognized by build.rs get rewritten
     // to a precomputed awk template, with arg0..argN substituted by operand
@@ -256,6 +260,28 @@ fn emit_fscanf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &
         }
         None => {
             let _ = writeln!(out, "{indent}_fscanf({}, {})", args[0], args[1]);
+        }
+    }
+}
+
+fn emit_sscanf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &str) {
+    // args[0] = source string addr, args[1] = fmt, args[2..] = destination pointers.
+    let _ = writeln!(out, "{indent}delete _PA");
+    for (i, arg) in args.iter().skip(2).enumerate() {
+        let _ = writeln!(out, "{indent}_PA[{i}] = {arg}");
+    }
+    match dest {
+        Some(d) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = _sscanf({}, {})",
+                name_to_var(d),
+                args[0],
+                args[1]
+            );
+        }
+        None => {
+            let _ = writeln!(out, "{indent}_sscanf({}, {})", args[0], args[1]);
         }
     }
 }
@@ -477,6 +503,8 @@ fn emit_invoke(
                 emit_scanf(out, &args, Some(&inv.result), indent);
             } else if target_name == "fscanf" {
                 emit_fscanf(out, &args, Some(&inv.result), indent);
+            } else if target_name == "sscanf" {
+                emit_sscanf(out, &args, Some(&inv.result), indent);
             } else if let Some(template) = probe_template(&target_name) {
                 emit_probe(out, template, &args, Some(&inv.result), indent);
             } else {

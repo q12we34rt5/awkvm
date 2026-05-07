@@ -91,12 +91,13 @@ function _ostream_put(stream, c) {
 
 # Skip whitespace at the current cursor, refilling from the stream's
 # source when the buffer is exhausted. Returns 1 if a non-ws char is
-# now under the cursor, 0 if EOF / unknown stream.
+# now under the cursor, 0 on EOF.
+#
+# Note: there's no early-return for "SRC empty" — sscanf preloads
+# `_STREAM_BUF` directly with no SRC at all, and we want to consume
+# what's already buffered before calling `_stream_read_line` (which
+# returns 0 for empty SRC, propagating to our return-0 path).
 function _istream_skip_ws(stream,    buf, pos, c) {
-    if (_STREAM_SRC[stream] == "") {
-        _STREAM_EOF[stream] = 1
-        return 0
-    }
     while (1) {
         buf = _STREAM_BUF[stream]
         pos = _STREAM_POS[stream]

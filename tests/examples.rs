@@ -399,6 +399,21 @@ fn scanf_basic() {
 }
 
 #[test]
+fn sscanf_basic() {
+    // sscanf parses a C-string in memory. _sscanf preloads
+    // _STREAM_BUF directly with the cstring (no SRC registered);
+    // the scanf engine consumes from BUF and stops when exhausted.
+    let out = run_fixture("io/sscanf_basic", "c", &[]);
+    assert_eq!(out.exit, 0, "[sscanf_basic] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        b"read 4 items: a=42 b=9876543210 c=3.14 s=hello\n",
+        "[sscanf_basic] stdout mismatch:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[test]
 fn fscanf_basic() {
     // fscanf reads from a libc FILE*. fprintf writes first; fscanf
     // reads the same three primitives back. Verifies the
