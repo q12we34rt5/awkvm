@@ -284,6 +284,13 @@ fn table() {
     check("table", "c", &[], 70, b"");
 }
 
+#[test]
+fn inline_awk() {
+    // 7 * 7 = 49; 3 * 4 + 5 = 17. Verifies `$N` substitution covers
+    // both output (`%0`) and several input operands (`%1` / `%2` / `%3`).
+    check("inline_awk", "c", &[], 0, b"sq=49 r=17\n");
+}
+
 // --- C++ fixtures -------------------------------------------------------
 
 #[test]

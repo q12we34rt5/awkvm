@@ -7,11 +7,13 @@ use llvm_ir::{Constant, Function, Name, Operand, Terminator};
 use super::MAX_ICALL_ARITY;
 use super::names::{block_label, constant_str, name_to_var, operand_str, sanitize};
 use super::probe_map::PROBE_MAP;
+use super::types::LayoutCx;
 
 pub(super) fn emit_call(
     out: &mut String,
     call: &llvm_ir::instruction::Call,
     indent: &str,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     let target_name = match &call.function {
         Either::Right(Operand::ConstantOperand(c)) => match c.as_ref() {
@@ -22,7 +24,7 @@ pub(super) fn emit_call(
             _ => bail!("indirect call target is not a global reference"),
         },
         Either::Right(op) => return emit_indirect_call(out, call, op, indent),
-        Either::Left(_) => bail!("inline assembly is not supported"),
+        Either::Left(_) => return emit_inline_awk(out, call, indent, cx),
     };
 
     if let Some(rest) = target_name.strip_prefix("llvm.") {
@@ -64,6 +66,82 @@ pub(super) fn emit_call(
     // sets UNWINDING; we must abandon the rest of this function so the
     // caller (or its enclosing landingpad) can react.
     let _ = writeln!(out, "{indent}if (UNWINDING) return");
+    Ok(())
+}
+
+// Inline assembly with `AWKVM:` prefix → emit raw awk. C source uses
+// `__asm__("AWKVM:%0 = %1 * 2" : "=r"(y) : "r"(x));`; clang lowers the
+// `%N` operand placeholders to `$N` in the IR's asm string. We strip
+// the `AWKVM:` prefix, substitute `$N` → operand string (output operand
+// → call dest, then input operands in order), and emit the body as awk
+// lines (one per `\n` in the asm string).
+//
+// llvm-ir 0.11 doesn't expose the asm string and constraints (LLVM C
+// API limitation), so parser::scan_inline_asm recovers them from the
+// .ll text. The recovered queue is on LayoutCx; we pop one entry here
+// per Either::Left site (source order matches by construction).
+//
+// Lets users escape into the full gawk surface — `system()`, `match()`,
+// `mktime()`, bidirectional `|&` — without us adding a runtime intercept
+// for every gawk-only feature.
+fn emit_inline_awk(
+    out: &mut String,
+    call: &llvm_ir::instruction::Call,
+    indent: &str,
+    cx: &mut LayoutCx<'_>,
+) -> Result<()> {
+    let (assembly, constraints) = cx.next_inline_asm().ok_or_else(|| {
+        anyhow!(
+            "inline assembly site has no matching entry in the asm queue \
+             (was the input a `.bc`? inline asm requires `.ll` input today)"
+        )
+    })?;
+    let body = assembly.strip_prefix("AWKVM:").ok_or_else(|| {
+        anyhow!(
+            "inline assembly `\"{assembly}\"` lacks the `AWKVM:` prefix; \
+             only awkvm-targeted asm is recognized"
+        )
+    })?;
+
+    // Constraint string: `=r,=r,r,r,~{cc}` — outputs first (prefixed
+    // with `=` or `+`), then inputs. We count outputs to know which
+    // `$N` indices map to the call's dest vs the call's args.
+    let n_outputs = constraints
+        .split(',')
+        .map(|c| c.trim())
+        .take_while(|c| c.starts_with('=') || c.starts_with('+'))
+        .count();
+
+    if n_outputs > 1 {
+        bail!(
+            "inline awk with {n_outputs} output operands is not supported \
+             (single output max for now)"
+        );
+    }
+
+    let dest = call.dest.as_ref().map(name_to_var);
+    let inputs: Vec<String> = call
+        .arguments
+        .iter()
+        .map(|(op, _)| operand_str(op))
+        .collect();
+
+    // Substitute $N descending so $10 is replaced before $1 etc.
+    let total = n_outputs + inputs.len();
+    let mut substituted = body.to_string();
+    for i in (0..total).rev() {
+        let placeholder = format!("${i}");
+        let replacement = if i < n_outputs {
+            dest.as_deref().unwrap_or("0").to_string()
+        } else {
+            inputs[i - n_outputs].clone()
+        };
+        substituted = substituted.replace(&placeholder, &replacement);
+    }
+
+    for line in substituted.lines() {
+        let _ = writeln!(out, "{indent}{line}");
+    }
     Ok(())
 }
 
@@ -229,6 +307,7 @@ pub(super) fn emit_terminator(
     current_block: &Name,
     func: &Function,
     indent: &str,
+    cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     use Terminator::*;
     match term {
@@ -272,7 +351,7 @@ pub(super) fn emit_terminator(
             }
             Ok(())
         }
-        Invoke(inv) => emit_invoke(out, inv, current_block, func, indent),
+        Invoke(inv) => emit_invoke(out, inv, current_block, func, indent, cx),
         Resume(r) => {
             let addr = operand_str(&r.operand);
             let _ = writeln!(out, "{indent}EXC_OBJ = _load({addr}, 64)");
@@ -297,6 +376,7 @@ fn emit_invoke(
     current_block: &Name,
     func: &Function,
     indent: &str,
+    _cx: &mut LayoutCx<'_>,
 ) -> Result<()> {
     let args: Vec<String> = inv.arguments.iter().map(|(op, _)| operand_str(op)).collect();
     let result = name_to_var(&inv.result);

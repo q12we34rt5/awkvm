@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Result, bail};
 use llvm_ir::{
@@ -22,15 +22,26 @@ pub(super) struct LayoutCx<'a> {
     pub types: &'a Types,
     sizes: HashMap<String, u64>,
     aligns: HashMap<String, u64>,
+    // Inline-asm calls in source order, recovered from the .ll text by
+    // parser::scan_inline_asm. emit_inline_awk pops one each time it
+    // hits an Either::Left(InlineAssembly) at a call site. Source
+    // order in the IR matches scan order in the text, so a single
+    // FIFO queue is enough.
+    asm_queue: VecDeque<&'a (String, String)>,
 }
 
 impl<'a> LayoutCx<'a> {
-    pub(super) fn new(types: &'a Types) -> Self {
+    pub(super) fn new(types: &'a Types, inline_asm: &'a [(String, String)]) -> Self {
         Self {
             types,
             sizes: HashMap::new(),
             aligns: HashMap::new(),
+            asm_queue: inline_asm.iter().collect(),
         }
+    }
+
+    pub(super) fn next_inline_asm(&mut self) -> Option<&'a (String, String)> {
+        self.asm_queue.pop_front()
     }
 
     pub(super) fn size(&mut self, ty: &TypeRef) -> Result<u64> {

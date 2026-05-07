@@ -79,7 +79,7 @@ pub(super) fn emit_function(
         for instr in &bb.instrs {
             emit_instruction(out, instr, "    ", cx)?;
         }
-        emit_terminator(out, &bb.term, &bb.name, func, "    ")?;
+        emit_terminator(out, &bb.term, &bb.name, func, "    ", cx)?;
     }
 
     let _ = writeln!(out, "}}");
@@ -97,7 +97,7 @@ fn emit_multi_block(out: &mut String, func: &Function, cx: &mut LayoutCx<'_>) ->
         for instr in &bb.instrs {
             emit_instruction(out, instr, "            ", cx)?;
         }
-        emit_terminator(out, &bb.term, &bb.name, func, "            ")?;
+        emit_terminator(out, &bb.term, &bb.name, func, "            ", cx)?;
         let _ = writeln!(out, "        }}");
     }
     let _ = writeln!(out, "    }}");
@@ -230,7 +230,7 @@ fn emit_instruction(
         }
         ICmp(i) => emit_icmp(out, indent, &i.dest, i.predicate, &i.operand0, &i.operand1),
         Phi(_) => Ok(()),
-        Call(call) => emit_call(out, call, indent),
+        Call(call) => emit_call(out, call, indent, cx),
         Alloca(a) => {
             let elem_size = cx.size(&a.allocated_type)?;
             let dest = name_to_var(&a.dest);

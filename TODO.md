@@ -17,15 +17,6 @@ to raw awk where useful, and awk scripts can call into compiled C.
 Each item below is independently small; together they form the
 v0.2.0 story.
 
-- **[ffi]** Inline awk via `__asm__("AWKVM:...")`. ROADMAP "Near-term"
-  has the design. ~half-day. Today `emit_call` bails on
-  `Either::Left(InlineAssembly)`; make it inspect the asm string for
-  an `AWKVM:` prefix and emit the rest verbatim with `%N`
-  placeholders substituted from the operands. Unlocks `system()`,
-  `match(/regex/)`, gawk's `mktime`, bidirectional `|&`, etc. — the
-  entire gawk surface — without us adding a matching libc / runtime
-  stub for every one.
-
 - **[ffi]** Whole-function awk bodies via
   `__attribute__((annotate("awkvm_body:...")))`. ~half-day. Same
   plumbing as the next item; scan `@llvm.global.annotations`,
@@ -58,9 +49,9 @@ v0.2.0 story.
   editor / linter / formatter support. Fits "200 lines of awk
   helpers should live in their own file" pattern.
 
-Logical sequence: inline awk first (simplest, exercises the
-`__asm__` path), then AWK_EXPORT (annotation infra carries forward
-to the body-annotation item), then `awkvm_body` (cheap once
+Inline awk landed in the commit linked under "Done" below. Logical
+sequence for the rest: AWK_EXPORT next (annotation infra carries
+forward to the body-annotation item), then `awkvm_body` (cheap once
 annotations work) and `--link` (independent — can slot anywhere).
 
 ## Todo (next, post-v0.2.0)
@@ -105,6 +96,9 @@ annotations work) and `--link` (independent — can slot anywhere).
 
 ## Done (recent commits)
 
+- _(this commit)_ Inline awk via `__asm__("AWKVM:...")`: parser
+  recovers asm/constraints from `.ll` text (LLVM C API hides them),
+  codegen substitutes `%N` placeholders and emits raw awk
 - `c2ce31e` README refresh: quick example, toolchain warning,
   doc links to ROADMAP / LIMITATIONS / CHANGELOG
 - `84428d8` v0.1.0 release: README + CHANGELOG + stats_cli demo +
