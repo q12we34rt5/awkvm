@@ -90,6 +90,55 @@ extern "C" {
 }
 ```
 
+## Combining multiple libraries
+
+You can't load two `awkvm --library` outputs into the same gawk
+invocation:
+
+```sh
+gawk -f libA.awk -f libB.awk -f script.awk    # ✗ won't work
+```
+
+Each `awkvm --library` output is self-contained: it bundles the
+runtime (`_alloc` / `_load` / `_zext` / `_trunc` / ...), libc
+helpers (`fn_printf` / `fn_strlen` / ...), the icall dispatcher,
+and a `BEGIN { NEXT_ADDR = 1 }` plus per-module globals init. Two
+copies collide on three different axes:
+
+1. **Duplicate function definitions** are an outright gawk error
+   (`function _alloc defined twice`). The script doesn't even
+   start.
+2. **Re-running `BEGIN { NEXT_ADDR = 1 }`** resets the bump
+   allocator counter, so libB's globals overlap libA's already-
+   issued addresses.
+3. **Shared `MEM[]`** has no per-library namespacing, so even if
+   the BEGINs were idempotent the two libraries' globals would
+   alias each other in the heap.
+
+The supported pattern: combine the **bitcode** before invoking
+awkvm. `llvm-link` merges `.bc` files into one module, then a
+single `awkvm --library` run produces one library with one runtime
+instance:
+
+```sh
+clang -O1 -emit-llvm -c a.c -o a.bc
+clang -O1 -emit-llvm -c b.c -o b.bc
+llvm-link a.bc b.bc -o combined.bc
+awkvm combined.bc --library -o lib.awk
+gawk -f lib.awk -f script.awk
+```
+
+This matches how a regular C library is built: object files link
+into one artifact before the runtime is materialized, not after.
+Cross-translation-unit `extern` declarations and shared globals
+resolve at link time the same way they would for a native build.
+
+(`--link helpers.awk` is the orthogonal feature for stitching
+hand-written awk helpers into a single awkvm output. Multiple
+`--link` flags work fine in a single `awkvm` invocation; the
+restriction above is specifically about combining *separate
+awkvm-generated `.awk` files* downstream.)
+
 ## Combining with `awkvm_fn`
 
 Both annotations can coexist. The `awkvm_fn` body provides the

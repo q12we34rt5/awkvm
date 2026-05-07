@@ -124,6 +124,21 @@ walk `module.func_declarations` for any `__put_character_sequence`
 or other probe-targeted symbol and warn loudly if its full mangled
 name (including the ABI tag) isn't in `PROBE_MAP`. On the TODO list.
 
+## FFI
+
+- **Multiple `awkvm --library` outputs can't be combined downstream.**
+  `gawk -f libA.awk -f libB.awk` fails on duplicate `function _alloc`
+  (and every other runtime helper); even if it didn't, both libraries
+  re-run `BEGIN { NEXT_ADDR = 1 }` and re-allocate globals into the
+  same `MEM[]`, aliasing each other. Combine `.bc` files via
+  `llvm-link` *before* invoking awkvm so the runtime + globals exist
+  in a single instance. See
+  [`docs/awkvm-export.md`](docs/awkvm-export.md#combining-multiple-libraries).
+- **`awkvm_export` ABI is primitive-only.** No pointer / struct
+  marshaling at the boundary in v0.2.0; the type checker bails at
+  codegen time. Inside a translated function, all the usual codegen
+  applies — the limit is just at the export wrapper.
+
 ## Permanently out of scope
 
 These would change what awkvm is, not just how much it covers:
