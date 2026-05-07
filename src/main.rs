@@ -19,9 +19,17 @@ struct Cli {
     /// inline awk via the same `fn_<name>`. May be passed multiple times.
     #[arg(long, value_name = "FILE")]
     link: Vec<PathBuf>,
+
+    /// Library mode: skip the `BEGIN { exit fn_main(...) }` boot line so
+    /// the emitted script is loadable as a gawk library
+    /// (`gawk -f lib.awk -f script.awk`). Pair with
+    /// `__attribute__((annotate("awkvm_export")))` on C functions to
+    /// expose them under their bare names to external awk callers.
+    #[arg(long)]
+    library: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    awkvm::compile(&cli.input, cli.output.as_deref(), &cli.link)
+    awkvm::compile(&cli.input, cli.output.as_deref(), &cli.link, cli.library)
 }

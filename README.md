@@ -47,9 +47,11 @@ for release notes.
   `__attribute__((annotate("awkvm_fn(args) { body }")))` lets a C
   function carry its awk implementation in the annotation; awkvm
   uses the annotation as the body and skips IR translation.
-
-`AWK_EXPORT` (the inverse — C functions exposed to outside awk
-scripts) is queued for v0.2.0; its guide lands alongside.
+- [`docs/awkvm-export.md`](docs/awkvm-export.md) — `awkvm --library`
+  + `__attribute__((annotate("awkvm_export")))` expose C functions
+  to outside awk callers under bare names. Call into the compiled
+  library with `gawk -f lib.awk -f script.awk`. v0.2.0 export ABI
+  is primitive-only (int / long / double / bool / char / void).
 
 ## Build
 

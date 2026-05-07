@@ -8,36 +8,15 @@ user-visible-broken right now, see [LIMITATIONS.md](LIMITATIONS.md).
 
 ## In progress
 
-_(empty — last item just landed)_
+_(empty — v0.2.0 FFI surface is complete; ready for tag + release
+notes)_
 
 ## Next major: v0.2.0 — C ↔ awk FFI
 
-A coherent release theme: make awkvm bidirectional. C code can drop
-to raw awk where useful, and awk scripts can call into compiled C.
-Each item below is independently small; together they form the
-v0.2.0 story.
-
-- **[ffi]** `AWK_EXPORT` — awk-callable C library mode (~2-3 days,
-  conceived 2026-05-07). `__attribute__((annotate("awkvm_export")))`
-  marks a C function as exported. awkvm:
-  1. Reads the annotation table, names the exports.
-  2. Type-checks each export's signature; bails at codegen time on
-     non-primitive args / returns. Initial scope: `int` / `long` /
-     `unsigned` / `double` / `bool` / `char` / `void`. `const char*`
-     and struct support deferred to a follow-up wrapper layer.
-  3. Adds a `--library` mode that skips the
-     `BEGIN { exit fn_main() }` line.
-  4. Emits the user's chosen function name (no `fn_` prefix) so
-     awk callers can `print sum_squares(10)` directly.
-
-  Caller pattern: `gawk -f lib.awk -f script.awk`, where `lib.awk`
-  is awkvm's output and `script.awk` calls the exported names.
-  Note: clang rejects `extern "awk" {}` (verified — "unknown
-  linkage language"), so we go via `annotate` instead.
-
-Inline awk, `--link helpers.awk`, and `awkvm_fn` annotate landed
-(commits below). Remaining v0.2.0 work: AWK_EXPORT — builds on the
-same `@llvm.global.annotations` parsing that `awkvm_fn` now uses.
+All four pieces of the bidirectional FFI surface have landed: inline
+awk, `--link helpers.awk`, `awkvm_fn` body annotation, and
+`awkvm_export` + `--library`. Next step is the v0.2.0 release
+itself — CHANGELOG, README polish, version bump, tag.
 
 ## Todo (next, post-v0.2.0)
 
@@ -51,6 +30,17 @@ same `@llvm.global.annotations` parsing that `awkvm_fn` now uses.
 
 ## Todo (later)
 
+- **[codegen]** i32 mul wraparound. clang -O1 can closed-form a loop
+  into a polynomial like `r14 = r13 * 1431655766` (reciprocal of 3,
+  scaled to 2^32) where the i32 result is the low 32 bits of the
+  product mod 2^32. awkvm currently emits the multiplication as a
+  raw `r13 * 1431655766` in awk, no truncation, so the result
+  overflows the i32 lane and downstream arithmetic explodes
+  (caught while building `awkvm_export.c` — `sum_squares(5)` came
+  out as 17,179,869,239 instead of 55). Fix: wrap `mul` (and other
+  width-bound arithmetic) through `_trunc(..., bits)` based on the
+  IR result type. Affects any heavily-arithmetic IR that clang
+  optimizes via the magic-number reciprocal trick.
 - **[iostream]** `<iomanip>` (setw / setfill / setprecision /
   hex / oct / dec / fixed / scientific). Per-stream format state in
   awk + per-helper consultation.
@@ -81,14 +71,26 @@ same `@llvm.global.annotations` parsing that `awkvm_fn` now uses.
 
 ## Done (recent commits)
 
-- _(prev commit)_ `awkvm_fn` annotation — `__attribute__((annotate(
+- _(this commit)_ `awkvm_export` + `--library`. Annotation
+  `__attribute__((annotate("awkvm_export")))` exposes a C function
+  to outside awk via a bare-name wrapper that forwards into the
+  existing `fn_<name>` body. `--library` flag skips the
+  `BEGIN { exit fn_main() }` boot line. Type checker rejects
+  non-primitive params / returns. `examples/awkvm_export.c` +
+  `examples/awkvm_export_caller.awk` for the full round-trip;
+  `docs/awkvm-export.md` for the cookbook.
+- `cf23174` Renamed `awkvm_body` → `awkvm_fn` end-to-end
+  (annotation key, fixture, doc, test) so the macro / file / key
+  all line up.
+- `308ed8a` `awkvm_fn` switched from `(args):body` to
+  `(args) { body }` form + `AWKVM_FN(decl, body)` two-arg macro
+  that auto-appends `;` so the user-side declaration looks like a
+  natural awk function definition transposed onto C source.
+- `0db3056` `awkvm_fn` annotation — `__attribute__((annotate(
   "awkvm_fn(args) { body }")))` skips IR translation and emits the
   body verbatim. Annotation infra in `src/codegen/annotate.rs`
   reads `@llvm.global.annotations`; works on both full-body and
   declare-only functions. `docs/awkvm-fn.md` for the cookbook.
-- _(this commit)_ Renamed `awkvm_body` → `awkvm_fn` end-to-end
-  (annotation key, fixture, doc, test) so the macro / file / key
-  all line up.
 - `a286ea5` link_basic_cpp fixture pinning the C++ extern "C" pattern
 - `6961814` link-awk doc: extern "C" requirement
 - `71c78d6` `awkvm --link helpers.awk` — concat a hand-written

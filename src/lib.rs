@@ -7,7 +7,12 @@ pub mod codegen;
 pub mod parser;
 pub mod runtime;
 
-pub fn compile(input: &Path, output: Option<&Path>, link: &[PathBuf]) -> Result<()> {
+pub fn compile(
+    input: &Path,
+    output: Option<&Path>,
+    link: &[PathBuf],
+    library: bool,
+) -> Result<()> {
     let parsed = parser::load(input)
         .with_context(|| format!("failed to parse {}", input.display()))?;
 
@@ -20,7 +25,7 @@ pub fn compile(input: &Path, output: Option<&Path>, link: &[PathBuf]) -> Result<
         })
         .collect::<Result<_>>()?;
 
-    let awk = codegen::emit(&parsed.module, &parsed.inline_asm, &linked)?;
+    let awk = codegen::emit(&parsed.module, &parsed.inline_asm, &linked, library)?;
     match output {
         Some(path) => {
             fs::write(path, awk).with_context(|| format!("failed to write {}", path.display()))?

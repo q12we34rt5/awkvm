@@ -110,6 +110,49 @@ fn awkvm_emit(ll: &Path, awk: &Path, link: &[&str]) {
     );
 }
 
+// `awkvm --library`: compile .c/.cpp into a gawk-loadable library, then
+// run a hand-written awk script that calls into it via the bare-name
+// wrappers emitted for `awkvm_export`-annotated C functions.
+fn run_export_fixture(stem: &str, ext: &str) -> Outcome {
+    let src = manifest_dir().join("examples").join(format!("{stem}.{ext}"));
+    let caller = manifest_dir()
+        .join("examples")
+        .join(format!("{stem}_caller.awk"));
+    assert!(src.exists(), "fixture missing: {}", src.display());
+    assert!(caller.exists(), "caller missing: {}", caller.display());
+
+    let tmp = TempDir::new().expect("tempdir");
+    let ll = tmp.path().join(format!("{stem}.ll"));
+    let lib_awk = tmp.path().join(format!("{stem}.awk"));
+
+    compile_to_ll(&src, ext == "cpp", &ll);
+
+    let mut cmd = Command::new(awkvm_bin());
+    cmd.arg(&ll).arg("-o").arg(&lib_awk).arg("--library");
+    let output = cmd.stderr(Stdio::null()).output().expect("spawn awkvm");
+    assert!(
+        output.status.success(),
+        "awkvm --library failed on {}\nstderr:\n{}",
+        ll.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut cmd = Command::new("gawk");
+    cmd.env("LC_ALL", "C");
+    cmd.arg("-f").arg(&lib_awk).arg("-f").arg(&caller);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn gawk");
+    child.stdin.as_mut().unwrap().write_all(b"").unwrap();
+    let output = child.wait_with_output().expect("wait gawk");
+    Outcome {
+        exit: output.status.code().unwrap_or(-1),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    }
+}
+
 fn run_gawk(awk: &Path, args: &[&str], stdin: &[u8]) -> Outcome {
     let mut cmd = Command::new("gawk");
     cmd.env("LC_ALL", "C");
@@ -328,6 +371,34 @@ fn inline_awk_regex() {
     // gawk regex (`gsub`) reachable through inline awk. C string in,
     // C string out via the same _cstr / _str_to_mem marshal pair.
     check("inline_awk_regex", "c", &[], 0, b"hell0 w0rld\n");
+}
+
+#[test]
+fn awkvm_export() {
+    // `awkvm --library` + `__attribute__((annotate("awkvm_export")))`:
+    // expose three primitive-only functions to an external awk caller
+    // via bare-name wrappers. Caller runs entirely in gawk; the
+    // wrappers forward into `fn_<name>` bodies emitted from C.
+    let out = run_export_fixture("awkvm_export", "c");
+    assert_eq!(out.exit, 0, "[awkvm_export] exit: {}", out.exit);
+    let expected = b"triangle(5) = 15\n\
+                     triangle(10) = 55\n\
+                     clipd(2.7, 0, 1) = 1.0\n\
+                     clipd(-5, 0, 10) = 0.0\n\
+                     gcd(48, 18) = 6\n\
+                     gcd(-12, 8) = 4\n";
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[awkvm_export] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[awkvm_export] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
