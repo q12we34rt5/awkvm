@@ -378,6 +378,30 @@ fn inline_awk_regex() {
 }
 
 #[test]
+fn fprintf_basic() {
+    // fprintf-to-fopen'd-file round-trip via _fprintf (stream-routed
+    // version of the same _format engine printf uses).
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("out.txt");
+    let path_str = path.to_str().expect("path utf8");
+    let out = run_fixture("io/fprintf_basic", "c", &[path_str]);
+    let expected = b"got 22 bytes: n=42 s=hello pi=3.142\n";
+    assert_eq!(out.exit, 0, "[fprintf_basic] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[fprintf_basic] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[fprintf_basic] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn block_io() {
     // ofstream::write + put → ifstream::read + gcount + get(EOF).
     // Round-trips 12 bytes via block I/O. gcount() is the inlined

@@ -32,13 +32,17 @@ pub(super) fn emit_call(
     }
 
     let args: Vec<String> = call.arguments.iter().map(|(op, _)| operand_str(op)).collect();
-    // printf is the only libc helper that can't be a plain awk function:
-    // its variadic args ride in the global _PA[] array, populated inline
-    // before the call. Everything else routes through fn_<name> like a
-    // user function and is provided by runtime/libc.awk (or by the user's
-    // own definition, when shadowing).
+    // printf-family helpers can't be plain awk functions: their variadic
+    // args ride in the global _PA[] array, populated inline before the
+    // call. Everything else routes through fn_<name> like a user function
+    // and is provided by runtime/libc.awk (or by the user's own
+    // definition, when shadowing).
     if target_name == "printf" {
         emit_printf(out, &args, call.dest.as_ref(), indent);
+        return Ok(());
+    }
+    if target_name == "fprintf" {
+        emit_fprintf(out, &args, call.dest.as_ref(), indent);
         return Ok(());
     }
 
@@ -206,6 +210,28 @@ fn emit_probe(
         }
         None => {
             let _ = writeln!(out, "{indent}{expr}");
+        }
+    }
+}
+
+fn emit_fprintf(out: &mut String, args: &[String], dest: Option<&Name>, indent: &str) {
+    // args[0] = stream (FILE*), args[1] = fmt, args[2..] = varargs.
+    let _ = writeln!(out, "{indent}delete _PA");
+    for (i, arg) in args.iter().skip(2).enumerate() {
+        let _ = writeln!(out, "{indent}_PA[{i}] = {arg}");
+    }
+    match dest {
+        Some(d) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = _fprintf({}, {})",
+                name_to_var(d),
+                args[0],
+                args[1]
+            );
+        }
+        None => {
+            let _ = writeln!(out, "{indent}_fprintf({}, {})", args[0], args[1]);
         }
     }
 }
@@ -399,6 +425,8 @@ fn emit_invoke(
             };
             if target_name == "printf" {
                 emit_printf(out, &args, Some(&inv.result), indent);
+            } else if target_name == "fprintf" {
+                emit_fprintf(out, &args, Some(&inv.result), indent);
             } else if let Some(template) = probe_template(&target_name) {
                 emit_probe(out, template, &args, Some(&inv.result), indent);
             } else {
