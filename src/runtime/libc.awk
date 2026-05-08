@@ -208,6 +208,26 @@ function fn___cxa_rethrow() {
     UNWINDING = 1
 }
 
+# Static-local one-time init. The Itanium ABI uses an i64 guard byte:
+# bit 0 == 1 means "already initialized". `acquire` returns nonzero if
+# THIS caller should run the initializer (and leaves the guard in an
+# in-progress state); `release` finalizes it. We're single-threaded so
+# the ABI's atomicity / threading concerns don't apply — just track
+# initialized-or-not via MEM[guard] and short-circuit on subsequent
+# calls. Without this, the default 0-return makes the runtime skip
+# every static-local initializer (e.g. `static const X = ctorExpr()`),
+# which silently leaves zeroinit data in place.
+function fn___cxa_guard_acquire(guard) {
+    if (_load(guard, 8) != 0) return 0
+    return 1
+}
+function fn___cxa_guard_release(guard) {
+    _store(guard, 1, 8)
+}
+function fn___cxa_guard_abort(guard) {
+    _store(guard, 0, 8)
+}
+
 # Itanium-mangled operator new / delete (and the nothrow / sized variants).
 function fn__Znwm(size) { return _alloc(size) }
 function fn__Znam(size) { return _alloc(size) }

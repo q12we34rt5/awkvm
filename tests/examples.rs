@@ -322,6 +322,17 @@ fn hello() {
 }
 
 #[test]
+fn imul_overflow() {
+    // `mul i32` overflows i32 by up to 32 bits, so codegen wraps the
+    // product in `_trunc(... , bits)` to get awkvm's 2's-complement
+    // wraparound. Without truncation the awkvm value escapes the i32
+    // range and downstream `_xor` (or any bitwise normalizer) fatals
+    // in gawk. Verifies both the truncation and a downstream bitwise
+    // op consuming the result.
+    check("basics/imul_overflow", "c", &[], 0, b"1410065408 1410067455\n");
+}
+
+#[test]
 fn point() {
     check("basics/point", "c", &[], 39, b"");
 }
@@ -777,6 +788,26 @@ fn stdvec() {
 #[test]
 fn stdvecstr() {
     check("stdlib/stdvecstr", "cpp", &[], 10, b"");
+}
+
+#[test]
+fn static_init() {
+    // Two C++ runtime init paths in one fixture:
+    //   * `Counter g_counter` rides `@llvm.global_ctors` — codegen
+    //     enumerates that table and emits ctor calls in BEGIN before
+    //     main runs. Without it `g_counter.value` reads as 0.
+    //   * `static Cached c(...)` is wrapped in `__cxa_guard_acquire` /
+    //     `release` — first acquire returns 1, release sets the
+    //     "initialized" bit, subsequent acquires return 0. Without
+    //     the helpers the ctor either never fires or fires every call,
+    //     visible in `builds=1` (correct) vs 0 / >1.
+    check(
+        "exceptions/static_init",
+        "cpp",
+        &[],
+        0,
+        b"g=100 once=21 21 21 builds=1\n",
+    );
 }
 
 #[test]

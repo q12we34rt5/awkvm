@@ -437,7 +437,9 @@ fn emit_intrinsic(
             assign(format!("_typeid_for({})", args[0]), out);
         }
         // Pure markers for the optimizer; nothing to emit at runtime.
-        "lifetime" | "dbg" | "assume" | "experimental" => {}
+        // `invariant.start` / `invariant.end` annotate stable-memory
+        // regions so passes can hoist loads — semantically a no-op.
+        "lifetime" | "dbg" | "assume" | "experimental" | "invariant" => {}
         _ => bail!("intrinsic `{full_name}` is not implemented yet"),
     }
     Ok(())

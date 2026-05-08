@@ -45,12 +45,18 @@ function _urem(a, b, w,    ua, ub, r) {
     return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
 }
 
+# LLVM shifts with `n < 0` or `n >= w` are poison, but the optimizer
+# happily evaluates both arms of a `select` so the unused arm can hit
+# us with garbage counts. gawk's lshift/rshift error on negatives, so
+# return 0 (a legal poison value) before they're called.
 function _shl(a, n, w,    ua, r) {
+    if (n < 0 || n >= w) return 0
     ua = a < 0 ? a + 2 ^ w : a
     r = lshift(ua, n) % (2 ^ w)
     return r >= 2 ^ (w - 1) ? r - 2 ^ w : r
 }
 function _lshr(a, n, w,    ua, r) {
+    if (n < 0 || n >= w) return 0
     ua = a < 0 ? a + 2 ^ w : a
     r = rshift(ua, n)
     return r >= 2 ^ (w - 1) ? r - 2 ^ w : r

@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use llvm_ir::{Constant, ConstantRef, Module, Name, Type, TypeRef, types::{FPType, Typed}};
 
 use super::MAX_ICALL_ARITY;
-use super::names::{float_literal, global_to_var, sanitize};
+use super::names::{float_literal, func_to_var, global_to_var, sanitize};
 use super::probe_map::STREAM_GLOBALS;
 use super::types::{LayoutCx, align_up, resolve_named, sign_extend};
 
@@ -167,6 +167,43 @@ pub(super) fn emit_globals_init(
             sanitize(this_name),
             sanitize(parent_str)
         );
+    }
+    // C++ static initializers (`_GLOBAL__sub_I_*`) and any other code that
+    // clang places in `@llvm.global_ctors`. Each entry is
+    // `{ i32 priority, ptr fn, ptr data }`; we sort by priority (low first)
+    // and emit direct calls to the function. Required for any TU that has
+    // a non-trivially-constructible global (e.g., aggregates whose fields
+    // hold pointers to other globals — those pointers can't be const-eval'd
+    // and clang materializes them via a runtime ctor).
+    if let Some(gv) = module
+        .global_vars
+        .iter()
+        .find(|gv| matches!(&gv.name, Name::Name(s) if s.as_str() == "llvm.global_ctors"))
+    {
+        let mut entries: Vec<(i64, String)> = Vec::new();
+        if let Some(init) = &gv.initializer
+            && let Constant::Array { elements, .. } = init.as_ref()
+        {
+            for el in elements {
+                let Constant::Struct { values, .. } = el.as_ref() else { continue };
+                if values.len() < 2 {
+                    continue;
+                }
+                let priority = match values[0].as_ref() {
+                    Constant::Int { value, bits } => sign_extend(*value, *bits),
+                    _ => 0,
+                };
+                let Constant::GlobalReference { name, .. } = values[1].as_ref() else {
+                    continue;
+                };
+                let Name::Name(fname) = name else { continue };
+                entries.push((priority, fname.to_string()));
+            }
+        }
+        entries.sort_by_key(|(p, _)| *p);
+        for (_, fname) in &entries {
+            let _ = writeln!(out, "    {}()", func_to_var(fname));
+        }
     }
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);

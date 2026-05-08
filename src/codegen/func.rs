@@ -164,7 +164,24 @@ fn emit_instruction(
     match instr {
         Add(i) => binop(out, indent, &i.dest, &i.operand0, "+", &i.operand1),
         Sub(i) => binop(out, indent, &i.dest, &i.operand0, "-", &i.operand1),
-        Mul(i) => binop(out, indent, &i.dest, &i.operand0, "*", &i.operand1),
+        // `mul` overflows the IR width by up to `bits` extra bits, so the
+        // product has to be truncated back to the i<bits> range. Without
+        // this the awkvm value escapes the signed range and downstream
+        // bitwise normalizers (_xor, _shl, ...) hand gawk a too-large
+        // operand and fatal. Add / Sub stay as plain binops because they
+        // grow the result by at most one bit, which the per-use _trunc
+        // / _xor calls absorb.
+        Mul(i) => {
+            let bits = operand_bits(&i.operand0)?;
+            let _ = writeln!(
+                out,
+                "{indent}{} = _trunc({} * {}, {bits})",
+                name_to_var(&i.dest),
+                operand_str(&i.operand0),
+                operand_str(&i.operand1),
+            );
+            Ok(())
+        }
         SDiv(i) => {
             let _ = writeln!(
                 out,
