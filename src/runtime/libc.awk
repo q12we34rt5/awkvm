@@ -88,6 +88,13 @@ function fn_strtold(s, end) { return _atof(s) }
 # system() — gawk system(s) is already blocking fork+exec.
 function fn_system(cmd) { return system(_cstr(cmd)) }
 
+# Math libc bridges. Most of <cmath> lowers to LLVM intrinsics at -O1
+# and is handled in src/codegen/call.rs; the few that don't (atan2 and
+# hypot, plus the libm fallbacks at -O0) need direct fn_<name> entries
+# so codegen can emit a regular call.
+function fn_atan2(y, x) { return atan2(y, x) }
+function fn_hypot(x, y) { return sqrt(x * x + y * y) }
+
 # stdio FILE* bridge. fopen allocates a 1-byte address as the FILE*
 # handle, registers it in the stream tables, and returns the address.
 # NULL (0) is returned when the mode string isn't recognized; gawk's

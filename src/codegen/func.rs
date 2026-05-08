@@ -137,6 +137,7 @@ fn instruction_dest(instr: &Instruction) -> Option<&Name> {
         FSub(i) => Some(&i.dest),
         FMul(i) => Some(&i.dest),
         FDiv(i) => Some(&i.dest),
+        FRem(i) => Some(&i.dest),
         FNeg(i) => Some(&i.dest),
         FCmp(i) => Some(&i.dest),
         SIToFP(i) => Some(&i.dest),
@@ -164,13 +165,12 @@ fn emit_instruction(
     match instr {
         Add(i) => binop(out, indent, &i.dest, &i.operand0, "+", &i.operand1),
         Sub(i) => binop(out, indent, &i.dest, &i.operand0, "-", &i.operand1),
-        // `mul` overflows the IR width by up to `bits` extra bits, so the
-        // product has to be truncated back to the i<bits> range. Without
-        // this the awkvm value escapes the signed range and downstream
-        // bitwise normalizers (_xor, _shl, ...) hand gawk a too-large
-        // operand and fatal. Add / Sub stay as plain binops because they
-        // grow the result by at most one bit, which the per-use _trunc
-        // / _xor calls absorb.
+        // Mul can overflow the IR-typed width by far more than one bit
+        // (e.g. i32 * i32 → up to ±2^62), and downstream bitwise helpers
+        // (`_xor`, `_lshr` …) only normalize values within ±2^w of zero.
+        // mt19937's seed mixer (`* 0x9e3779b9` and `* 1812433253`) walks
+        // straight off the cliff without this. Add/Sub stay close enough
+        // to width that the existing bitwise normalizers absorb them.
         Mul(i) => {
             let bits = operand_bits(&i.operand0)?;
             let _ = writeln!(
@@ -355,6 +355,20 @@ fn emit_instruction(
         FSub(i) => binop(out, indent, &i.dest, &i.operand0, "-", &i.operand1),
         FMul(i) => binop(out, indent, &i.dest, &i.operand0, "*", &i.operand1),
         FDiv(i) => binop(out, indent, &i.dest, &i.operand0, "/", &i.operand1),
+        // Float remainder: x - trunc(x / y) * y. Sign follows the
+        // dividend (matches C99 `fmod`, which is what `std::fmod`
+        // lowers to via `frem`). gawk's `int()` truncates toward zero,
+        // so `int(x / y)` is exactly the trunc we want.
+        FRem(i) => {
+            let a = operand_str(&i.operand0);
+            let b = operand_str(&i.operand1);
+            let _ = writeln!(
+                out,
+                "{indent}{} = {a} - int({a} / {b}) * {b}",
+                name_to_var(&i.dest),
+            );
+            Ok(())
+        }
         FNeg(i) => {
             let _ = writeln!(
                 out,

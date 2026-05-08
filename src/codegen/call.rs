@@ -378,9 +378,79 @@ fn emit_intrinsic(
         "tan" if args.len() == 1 => {
             assign(format!("(sin({a}) / cos({a}))", a = args[0]), out);
         }
+        // Inverse trig: gawk has atan2 as a builtin; the others compose
+        // through it. asin / acos are real-valued only for |x| <= 1;
+        // outside that range the awk expressions evaluate sqrt of a
+        // negative and produce a domain error, matching libm behaviour.
+        "asin" if args.len() == 1 => {
+            assign(format!("atan2({a}, sqrt(1 - {a} * {a}))", a = args[0]), out);
+        }
+        "acos" if args.len() == 1 => {
+            assign(format!("atan2(sqrt(1 - {a} * {a}), {a})", a = args[0]), out);
+        }
+        "atan" if args.len() == 1 => {
+            assign(format!("atan2({}, 1)", args[0]), out);
+        }
+        // Hyperbolic family. tanh uses the `e^(2x)` form (one exp call,
+        // saturates correctly at extremes); sinh / cosh need both exp(x)
+        // and exp(-x) regardless.
+        "sinh" if args.len() == 1 => {
+            assign(format!("((exp({a}) - exp(-{a})) / 2)", a = args[0]), out);
+        }
+        "cosh" if args.len() == 1 => {
+            assign(format!("((exp({a}) + exp(-{a})) / 2)", a = args[0]), out);
+        }
+        "tanh" if args.len() == 1 => {
+            assign(
+                format!("((exp(2 * {a}) - 1) / (exp(2 * {a}) + 1))", a = args[0]),
+                out,
+            );
+        }
         "exp" if args.len() == 1 => assign(format!("exp({})", args[0]), out),
+        // exp2(x) = 2^x. gawk's `^` is float-exponent, so this works for
+        // arbitrary x (not just integer x).
+        "exp2" if args.len() == 1 => assign(format!("(2 ^ {})", args[0]), out),
         "log" if args.len() == 1 => assign(format!("log({})", args[0]), out),
+        // log2 / log10 via change-of-base. The constants are 1/log(2)
+        // and 1/log(10) precomputed to avoid a second call per use.
+        "log2" if args.len() == 1 => {
+            assign(format!("(log({}) * 1.4426950408889634)", args[0]), out);
+        }
+        "log10" if args.len() == 1 => {
+            assign(format!("(log({}) * 0.4342944819032518)", args[0]), out);
+        }
         "pow" if args.len() == 2 => assign(format!("({} ^ {})", args[0], args[1]), out),
+        // copysign(x, y) returns |x| with the sign of y. The y == 0 case
+        // resolves to +|x| (we treat zero as non-negative; libm would
+        // honour signed zero, which gawk doesn't model).
+        "copysign" if args.len() == 2 => {
+            assign(
+                format!(
+                    "({y} >= 0 ? ({x} < 0 ? -{x} : {x}) : ({x} < 0 ? {x} : -{x}))",
+                    x = args[0],
+                    y = args[1]
+                ),
+                out,
+            );
+        }
+        // round(x): half away from zero (C99 `round`, NOT `rint`'s
+        // half-to-even). Splits on sign so `int()` (which truncates
+        // toward zero) lands on the right side of the boundary.
+        "round" if args.len() == 1 => {
+            assign(
+                format!("({a} >= 0 ? int({a} + 0.5) : -int(-{a} + 0.5))", a = args[0]),
+                out,
+            );
+        }
+        // llvm.minnum / maxnum return the non-NaN operand; minimum /
+        // maximum are NaN-propagating (IEEE 754-2019). gawk has no NaN
+        // representation so both collapse to a plain compare-and-pick.
+        "minnum" | "minimum" if args.len() == 2 => {
+            assign(format!("{a} < {b} ? {a} : {b}", a = args[0], b = args[1]), out);
+        }
+        "maxnum" | "maximum" if args.len() == 2 => {
+            assign(format!("{a} > {b} ? {a} : {b}", a = args[0], b = args[1]), out);
+        }
         "fabs" if args.len() == 1 => {
             assign(format!("({a} < 0 ? -{a} : {a})", a = args[0]), out);
         }

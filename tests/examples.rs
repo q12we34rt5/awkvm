@@ -821,6 +821,34 @@ fn stdvecstr() {
 }
 
 #[test]
+fn stdmath() {
+    // <cmath> sweep covering the math intrinsics
+    // (asin/acos/atan, sinh/cosh, log2/log10, exp2, copysign, round,
+    // minnum / maxnum), the libc bridges (atan2, hypot), and the
+    // FRem opcode that backs `std::fmod`. Volatile inputs prevent
+    // -O1 from constant-folding past the intrinsic.
+    check(
+        "stdlib/stdmath",
+        "cpp",
+        &[],
+        0,
+        b"asin=0.5236 acos=1.0472 atan=0.4636\n\
+          atan2=0.5404 sinh=0.5211 cosh=1.1276\n\
+          log2=3.0000 log10=3.0000 exp2=8.0000\n\
+          copysign=-3.0 round=3.0 hypot=5.0000\n\
+          fmin=0.3 fmax=0.5 fmod=1.5000\n",
+    );
+}
+
+#[test]
+fn stdtanh() {
+    // `std::tanh` lowers to `llvm.tanh.f64` at -O1; the intrinsic is
+    // expanded to `(exp(2x) - 1) / (exp(2x) + 1)` to halve the number
+    // of `exp` calls. tanh(0) = 0, tanh(1) ≈ 0.7616, tanh(-2) ≈ -0.9640.
+    check("stdlib/stdtanh", "cpp", &[], 0, b"0.0000 0.7616 -0.9640\n");
+}
+
+#[test]
 fn static_init() {
     // Two C++ runtime init paths in one fixture:
     //   * `Counter g_counter` rides `@llvm.global_ctors` — codegen
