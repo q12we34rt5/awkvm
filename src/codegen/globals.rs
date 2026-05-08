@@ -88,7 +88,44 @@ pub(super) fn emit_globals_init(
         let _ = writeln!(out, "    {} = _alloc({size})", global_to_var(&gv.name));
     }
     for gv in &externs {
-        let _ = writeln!(out, "    {} = _alloc(8)", global_to_var(&gv.name));
+        // `_DefaultRuneLocale` is Darwin libc's per-locale ctype table that
+        // `isalpha` / `isdigit` / etc. inline as `_DefaultRuneLocale.__runetype[c] & FLAG`.
+        // The struct has a 60-byte header followed by a 256-entry uint32_t
+        // table; the header bytes don't matter to the inlined fast path,
+        // but we have to leave room for the table or every ctype call
+        // returns 0. `_init_ctype` (in libc.awk) populates the ASCII range.
+        let name_str = match &gv.name {
+            Name::Name(s) => s.as_str(),
+            _ => "",
+        };
+        let var = global_to_var(&gv.name);
+        if name_str == "_DefaultRuneLocale" {
+            let _ = writeln!(out, "    {var} = _alloc(1088)");
+            let _ = writeln!(out, "    _init_ctype({var})");
+        } else if matches!(name_str, "__stderrp" | "__stdoutp" | "__stdinp") {
+            // Darwin libc stdio globals: each is a `FILE*` (8-byte pointer).
+            // `fprintf(stderr, ...)` lowers to `fwrite(..., *__stderrp)`, so
+            // `_load(g___stderrp, 64)` must return a non-zero address that
+            // we've registered in `_STREAM_DEST` / `_STREAM_SRC` with the
+            // right gawk redirect target. Without this the load returns 0
+            // and the fwrite falls back to stdout — silently misrouting
+            // stderr writes and breaking everything that tries to print
+            // diagnostics.
+            let _ = writeln!(out, "    {var} = _alloc(8)");
+            let _ = writeln!(out, "    {var}__file = _alloc(1)");
+            let _ = writeln!(out, "    _store({var}, {var}__file, 64)");
+            match name_str {
+                "__stderrp" => {
+                    let _ = writeln!(out, "    _STREAM_DEST[{var}__file] = \"/dev/stderr\"");
+                }
+                "__stdinp" => {
+                    let _ = writeln!(out, "    _STREAM_SRC[{var}__file] = \"/dev/stdin\"");
+                }
+                _ => {} // stdout: leave _STREAM_DEST empty so fallback prints to stdout
+            }
+        } else {
+            let _ = writeln!(out, "    {var} = _alloc(8)");
+        }
     }
     // Function pointer registry has to be set BEFORE emit_const_init runs:
     // vtable initializers reference functions via g_<name>, and we need that

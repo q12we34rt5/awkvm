@@ -307,6 +307,17 @@ fn buf() {
 }
 
 #[test]
+fn ctype() {
+    // Darwin libc inlines isalpha / isdigit / etc. as a load from
+    // `_DefaultRuneLocale.__runetype[c] & FLAG`. Codegen detects the
+    // external global by name, allocates the 1088-byte table, and
+    // calls `_init_ctype` to populate the ASCII range. Without this
+    // every classification returns 0 and the fixture's hit-count
+    // collapses to whatever counts the negative-test branches.
+    check("basics/ctype", "c", &[], 0, b"hits=10\n");
+}
+
+#[test]
 fn floats() {
     check("basics/floats", "c", &[], 14, b"");
 }
@@ -439,6 +450,25 @@ fn fscanf_basic() {
         b"read 3 items: a=42 b=9876543210 c=3.14\n",
         "[fscanf_basic] stdout mismatch:\n{}",
         String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[test]
+fn fprintf_stderr() {
+    // Darwin lowers `fprintf(stderr, ...)` to `fwrite(..., *__stderrp)`.
+    // Codegen recognises `__stderrp` (and `__stdoutp` / `__stdinp`),
+    // backs each with a sentinel address registered in
+    // `_STREAM_DEST` / `_STREAM_SRC` so the load returns a non-zero
+    // FILE* that routes via the right gawk redirect target. Without
+    // this fixture the misrouting is invisible because both streams
+    // appear together when the tester's terminal is interleaved.
+    check_streams(
+        "io/fprintf_stderr",
+        "c",
+        &[],
+        0,
+        b"stdout-line\n",
+        b"stderr-line 42\n",
     );
 }
 
