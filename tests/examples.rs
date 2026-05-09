@@ -344,6 +344,39 @@ fn imul_overflow() {
 }
 
 #[test]
+fn memmove() {
+    // memmove must pick copy direction based on dst vs src so that
+    // overlapping ranges round-trip correctly. memcpy gets this
+    // wrong on most platforms; awkvm's _memmove walks backward when
+    // dst > src and forward otherwise.
+    check(
+        "basics/memmove",
+        "c",
+        &[],
+        0,
+        b"right: ababcdefgh\nleft: CDEFGHIJIJ\n",
+    );
+}
+
+#[test]
+fn parse_num() {
+    // libc number parsing: atoi / atol / atoll / strtol / atof /
+    // strtod. strtoX endptr / base args are accepted but ignored —
+    // matches the dominant `strtol(s, NULL, 10)` call shape. C
+    // semantics: stop at first non-numeric character.
+    check(
+        "basics/parse_num",
+        "c",
+        &[],
+        0,
+        b"atoi=42 atol=-12345 atoll=9876543210\n\
+          strtol=100\n\
+          atof=3.14 strtod=-2500.0000\n\
+          trailing=99\n",
+    );
+}
+
+#[test]
 fn point() {
     check("basics/point", "c", &[], 39, b"");
 }
@@ -351,6 +384,21 @@ fn point() {
 #[test]
 fn str_example() {
     check("basics/str", "c", &[], 98, b"");
+}
+
+#[test]
+fn strcmp() {
+    // strcmp returns the SIGN of the difference at the first
+    // differing byte — magnitudes vary across libc implementations,
+    // so each line below collapses to a `< 0` / `> 0` / `== 0`
+    // boolean.
+    check(
+        "basics/strcmp",
+        "c",
+        &[],
+        0,
+        b"eq=1\nlt=1\ngt=1\nprefix=1\nempty=1\n",
+    );
 }
 
 #[test]
@@ -606,6 +654,56 @@ fn file_io() {
         out.stderr.is_empty(),
         "[file_io] unexpected stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn char_io() {
+    // file_io covers the bulk fwrite/fread path; this covers the
+    // byte/line wrappers (fputc / fputs / fgetc / fgets) that route
+    // through the same _stream_* primitives via different libc
+    // bridges. fgetc returns -1 on EOF (matching the C convention
+    // that <stdio.h> defines EOF as -1).
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("char.txt");
+    let path_str = path.to_str().expect("path utf8");
+    let out = run_fixture("io/char_io", "c", &[path_str]);
+    let expected = b"line1: first line\n[A] [B] nl count=3\n";
+    assert_eq!(out.exit, 0, "[char_io] exit: {}", out.exit);
+    assert_eq!(
+        out.stdout.as_slice(),
+        expected,
+        "[char_io] stdout mismatch\n--- got ---\n{}\n--- expected ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(expected),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "[char_io] unexpected stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn system_call() {
+    // system() bridges to gawk's blocking system() builtin. We assert
+    // the return code only — `true` and `false` are POSIX builtins
+    // that always exist; child stdout interleaving is what popen
+    // exists for and isn't tested here.
+    check("io/system_call", "c", &[], 0, b"true=1 false=1\n");
+}
+
+#[test]
+fn popen_pipe() {
+    // popen("r") reads child stdout via gawk's `cmd | getline`;
+    // pclose surfaces the child exit code via gawk's close()
+    // return value. fgets pulls lines until EOF.
+    check(
+        "io/popen_pipe",
+        "c",
+        &[],
+        0,
+        b"line1: hello\nline2: world\nrc=0 count=2\n",
     );
 }
 
