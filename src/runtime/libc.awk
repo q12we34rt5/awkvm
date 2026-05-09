@@ -48,6 +48,14 @@ function fn_memset(p, v, n) {
     return _memset(p, v, n)
 }
 
+# Darwin _FORTIFY_SOURCE wraps memcpy / memmove / memset in `__X_chk`,
+# adding a 4th `dst_size` arg used for runtime overflow checking.
+# The check itself is a hardening feature; for awkvm we just discard
+# it and forward to the unchecked helper.
+function fn___memcpy_chk(dst, src, n, dst_size)  { return _memcpy(dst, src, n) }
+function fn___memmove_chk(dst, src, n, dst_size) { return _memmove(dst, src, n) }
+function fn___memset_chk(p, v, n, dst_size)      { return _memset(p, v, n) }
+
 # Darwin libc fixed-stride pattern fills.
 function fn_memset_pattern4(dst, pat, n) {
     _memset_pattern(dst, pat, n, 4)
