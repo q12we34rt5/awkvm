@@ -1,5 +1,110 @@
 # Changelog
 
+## [0.3.1] — 2026-05-09
+
+Theme: **robustness + coverage**. Six commits since 0.3.0 fixing
+silent miscompiles surfaced while compiling third-party C++ through
+awkvm (the immediate trigger was a heavily-optimised tetris engine
+plus its MCTS AI), broadening the `<cmath>` and Darwin libc
+surface, and closing fixture gaps in the v0.3.0 helpers.
+
+### Fixed — silent miscompiles
+
+- **`mul i32` width truncation.** awkvm was emitting plain `*` for
+  the `mul` opcode, so `i32 * i32` overflowed by up to 32 bits and
+  downstream `_xor` / `_lshr` either fataled in gawk or silently
+  miscomputed. Wrap in `_trunc(... , bits)`. mt19937's seed mixer
+  (`* 0x9e3779b9` and `* 1812433253`) was the smoking gun.
+- **`@llvm.global_ctors` not enumerated.** Any TU with a
+  non-trivially-constructible global (aggregates of pointers to
+  other globals, etc.) started life with the field zero-initialised
+  instead of running its ctor. Parse the table at the end of
+  globals BEGIN and call each function in priority order.
+- **`__cxa_guard_acquire` defaulted to 0.** Static-locals with
+  dynamic initialisers (`static const X = ctorExpr()`) had their
+  ctor skipped — `acquire` returning 0 means "already initialised".
+  Add minimal helpers backed by a single MEM byte per guard.
+- **`_shl` / `_lshr` faulted on negative shift count.** clang folds
+  `(n >= 0 && n < w) ? a << n : 0` into a `select`, which
+  evaluates both arms even when one has UB shift count. gawk
+  fataled on the negative `lshift` / `rshift`. Guard with
+  `n < 0 || n >= w` and return 0 (a legal poison value).
+- **`llvm.invariant.start` / `invariant.end` unimplemented.** -O1
+  builds with stable-memory annotations were bailing. Add to the
+  no-op marker list alongside `lifetime` / `dbg` / `assume`.
+- **printf `%lld` / `%ld` / `%hh*` / `%zu` / `%jd` / `%td` / `%Lf`
+  printed literally.** gawk's sprintf doesn't recognise the C99
+  length modifiers. Strip them in `_format` before handing the
+  spec to sprintf — awk has one numeric type so the modifier was
+  advisory anyway.
+
+### Added — Darwin libc bridging
+
+- **`_DefaultRuneLocale`** — Darwin's per-locale ctype table that
+  `isalpha` / `isdigit` / `isspace` / etc. inline as
+  `MEM[_DefaultRuneLocale + 60 + c*4] & FLAG`. The struct was an
+  external 8-byte placeholder, so every classification returned 0
+  and any input parser (argument parsing, `std::stoi`, JSON
+  scanners) silently degraded. Allocate the full 1088 bytes and
+  populate the ASCII range in `_init_ctype`.
+- **`__stderrp` / `__stdoutp` / `__stdinp`** — Darwin stdio FILE\*
+  globals. `fprintf(stderr, ...)` lowers to
+  `fwrite(..., *__stderrp)`; the zero pointer slot fell through to
+  the absent-stream fallback (`printf "%c"`) which gawk routes to
+  stdout. Every `fprintf(stderr, ...)` was silently mis-buffered
+  behind stdout's 4 KB buffer. Allocate 8 bytes for the pointer
+  + a 1-byte sentinel FILE\*, store the sentinel into the slot,
+  register it in `_STREAM_DEST` / `_STREAM_SRC`.
+- **`__memcpy_chk` / `__memmove_chk` / `__memset_chk`** —
+  `_FORTIFY_SOURCE` chk variants. Default-on under Darwin
+  `<string.h>`. Each forwards to the unchecked helper after
+  discarding the dst-size arg.
+
+### Added — `<cmath>` coverage
+
+LLVM intrinsics expanded inline (codegen):
+
+- **Inverse trig:** `asin` / `acos` / `atan` (atan2-based; gawk
+  has atan2 as a builtin)
+- **Hyperbolic:** `sinh` / `cosh` (closed form via `exp`); `tanh`
+  (already present; uses the `e^(2x)` reduction for one fewer
+  exp call)
+- **Logs / exps:** `log2` / `log10` (change of base, precomputed
+  reciprocal log), `exp2` (`2 ^ x`)
+- **Misc:** `copysign`, `round` (half-away-from-zero, NOT rint's
+  half-to-even), `minnum` / `maximum` / etc.
+  (NaN-irrelevant in gawk)
+
+libc bridges (clang never lowers these to an intrinsic):
+
+- **`atan2`** — gawk builtin, direct wrap
+- **`hypot`** — composed as `sqrt(x*x + y*y)`
+
+LLVM opcode (`std::fmod` lowers to `frem`, not a libm call):
+
+- **`FRem`** — `x - int(x / y) * y`. Sign follows the dividend
+  (matches C99 fmod). gawk's `int()` truncates toward zero.
+
+### Added — fixture coverage
+
+`cargo test` now runs **58 end-to-end fixtures** (was 46 in
+v0.3.0). New fixtures:
+
+- `basics/ctype` — Darwin ctype table coverage
+- `basics/imul_overflow` — `mul i32` truncation + downstream xor
+- `basics/memmove` — overlap-safe copy (volatile size hides the
+  constant from clang IPSCCP)
+- `basics/parse_num` — atoi / atol / atoll / strtol / atof / strtod
+- `basics/strcmp` — sign-only assertions
+- `exceptions/static_init` — `@llvm.global_ctors` + `__cxa_guard_*`
+- `io/char_io` — fputc / fputs / fgetc / fgets round-trip
+- `io/fprintf_stderr` — `fprintf(stderr, ...)` routing
+- `io/popen_pipe` — popen "r" + fgets + pclose
+- `io/system_call` — `system()` return code
+- `stdlib/stdmath` — full `<cmath>` sweep (volatile inputs prevent
+  -O1 constant-folding past the call)
+- `stdlib/stdtanh` — tanh-only, the smallest possible repro
+
 ## [0.3.0] — 2026-05-08
 
 Theme: **I/O subsystem**. Single address-keyed stream model
