@@ -3,7 +3,7 @@
 # returns the formatted string. Both `_printf` (stdout) and
 # `_fprintf` (stream) sit on this. Supports %d %i %u %x %X %o %c %s
 # %p %f %F %g %G %e %E and %%.
-function _format(fmt_addr,    fmt, n, i, c, ai, j, conv, spec, out) {
+function _format(fmt_addr,    fmt, n, i, c, ai, j, conv, spec, body, out) {
     fmt = _cstr(fmt_addr)
     n = length(fmt)
     ai = 0
@@ -33,7 +33,14 @@ function _format(fmt_addr,    fmt, n, i, c, ai, j, conv, spec, out) {
         } else if (conv == "p") {
             out = out sprintf("0x%x", _PA[ai]); ai++
         } else {
-            out = out sprintf(spec, _PA[ai]); ai++
+            # Strip C99 length modifiers (h, hh, l, ll, j, z, t, L) —
+            # gawk's sprintf treats `%lld` etc. as literal text, so the
+            # spec has to be normalised to plain `%d` / `%f` / etc.
+            # before formatting. awk has one numeric type, so the
+            # modifier was advisory anyway.
+            body = substr(spec, 1, length(spec) - 1)
+            gsub(/h|l|j|z|t|L/, "", body)
+            out = out sprintf(body conv, _PA[ai]); ai++
         }
         i = j + 1
     }
